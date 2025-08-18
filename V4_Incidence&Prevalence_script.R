@@ -816,6 +816,8 @@ data_km <- data_inc_pooled %>%
 
 # Split data by imputation
 km_data_split <- group_split(data_km, imputation)
+time_breaks <- seq(0, 216, by = 12)  # up to 12 years
+time_labels <- as.character(time_breaks / 12)
 
 # Fit and extract summaries, converting to data frames
 risk_tables <- map(km_data_split, function(df) {
@@ -892,8 +894,8 @@ fit_km$upper <- 1 - fit_km$lower
 
 # Then plot as usual (skip `transform_surv_to_cuminc()`)
 km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
-  scale_x_continuous(breaks = time_breaks, labels = time_labels) +
-  scale_y_continuous(limits = c(0, 0.35),expand = c(0, 0)) +
+  scale_x_continuous(breaks = time_breaks, labels = time_labels, limits = c(0, max(time_breaks)))+
+ scale_y_continuous(limits = c(0, 0.35),expand = c(0, 0)) +
   labs(
     title = "Cumulative Incidence of D2T RA over Time with All Sensitivity Definitions",
     x = "Years from Risk Start",
