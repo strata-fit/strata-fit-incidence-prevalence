@@ -137,6 +137,18 @@ data_node <- data_node %>%
 #define current calender year variable
 data_node$current_year <- round(data_node$Year_diagnosis + (data_node$month_diagnosis/12) +  (data_node$Visit_months_from_diagnosis)/12)
 
+data_node <- data_node %>%
+  group_by(pat_ID) %>%
+  arrange(Visit_months_from_diagnosis) %>%
+  mutate(
+    # mark when cum_btsDMARD increases (a new counted b/tsDMARD start)
+    new_DMARD_start = if_else( cum_btsDMARD > lag(cum_btsDMARD, default = 0),
+      Visit_months_from_diagnosis, as.numeric(NA))) %>%
+  fill(new_DMARD_start, .direction = "down") %>%        # carry start time forward
+  mutate(delta_DMARD_time = Visit_months_from_diagnosis - new_DMARD_start) %>%
+  select(-new_DMARD_start) %>%                           # drop helper
+  ungroup()
+
 #define current age / age category
 data_node$current_age <- round(data_node$Age_diagnosis + (data_node$Visit_months_from_diagnosis/12) + 0.5) 
 #current age categories
@@ -259,9 +271,9 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_crit1b = ifelse(cum_csDMARD > 0 & cum_btsDMARD > 2 & FU_2000 < 120, 1, 0),
       
       # Criterion 2
-      D2T_crit2 = ifelse(DAS28_imp > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
-      D2T_crit2a = ifelse(rol_av_DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
-      D2T_crit2b = ifelse(DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
+      D2T_crit2 = ifelse((DAS28_imp > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1)) & delta_DMARD_time >= 6, 1, 0),
+      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1)) & delta_DMARD_time >= 6, 1, 0),
+      D2T_crit2b = ifelse((DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1)) & delta_DMARD_time >= 6, 1, 0),
       D2T_crit2sens1 = ifelse(DAS28_imp > 3.2, 1, 0),
       D2T_crit2sens2 = ifelse(DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
       
