@@ -574,7 +574,7 @@ def_labels <- c(
   "D2T_step7" = "8. MOA ≥3"
 )
 
-ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color = definition)) +
+Inc_plot <- ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color = definition)) +
   geom_line(size = 1.2) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = definition), alpha = 0.2, color = NA) +
   scale_color_manual(values = scales::hue_pal()(length(defs)), labels = def_labels) +
@@ -586,11 +586,11 @@ ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color = definition
     fill = "Definition",
     title = "Pooled Cumulative Incidence of D2T RA Over Time"
   ) +
-  scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  # ← Added this line
+  scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) + 
+  coord_cartesian(xlim = c(0, 18)) +  # Limit at 18 years of follow-up
   scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "right")
-
 
 
 ################################################################
@@ -643,7 +643,6 @@ Table3 <- baseline_all %>%
 # ---- Print nicely ----
 print(Table3)
 
-
 ################################################################
 # Average Disease AFTER D2T RA 
 ################################################################
@@ -688,6 +687,16 @@ Table3b <- purrr::map_dfr(defs, function(def) {
     CRP_sd = sd(Table3b$CRP, na.rm = TRUE)
   )
 })
+
+Table3b <- Table3b %>% mutate(
+  DAS28 =  paste0(round(DAS28_mean,2) , " (", round(DAS28_sd, 2), ") "),
+  TJC28 =  paste0(round(TJC28_mean,2) , " (", round(TJC28_sd, 2), ") "),
+  SJC28 =  paste0(round(SJC28_mean,2) , " (", round(SJC28_sd, 2), ") "),
+  ESR =  paste0(round(ESR_mean,2) , " (", round(ESR_sd, 2), ") "),
+  CRP =  paste0(round(CRP_mean,2) , " (", round(CRP_sd, 2), ") ")) %>%
+  select(Definition, DAS28, TJC28, SJC28, ESR, CRP)
+
+print(Table3b)
 
 ################################################################
 # Persistance
@@ -793,11 +802,19 @@ followup_summary <- followup_df %>%
   )
 
 # ---- Final Combined Summary Table (Optional) ----
-Table4 <- persistence_summary %>%
+Table3c <- persistence_summary %>%
   left_join(followup_summary, by = "definition")
 
+Table3c <- Table3c %>% mutate(
+  persistence =  paste0(round(median_persistence,2) , " (", round(Q1, 2), "-",round(Q3, 2),") "),
+  FU =  paste0(round(mean_followup_months,2) , " (", round(sd_followup_months, 2), ") "),
+  visits =  paste0(round(mean_n_visits,2) , " (", round(sd_n_visits, 2), ") "),
+  median_visits =  paste0(round(median_n_visits,2) , " (", round(Q1_n_visits, 2), "-",round(Q3_n_visits, 2), ") ")) %>%
+  select(definition, persistence, FU, visits, median_visits)
+
 # View the result
-print(Table4)
+print(Table3c)
+
 
 ################################################################
 # Sensitvity analysis 
@@ -834,6 +851,7 @@ time_labels <- as.character(time_breaks / 12)
 # Fit and extract summaries, converting to data frames
 risk_tables <- map(km_data_split, function(df) {
   fit <- survfit(Surv(time, status) ~ definition, data = df)
+  # use same breaks for the risk table summaries
   summary_fit <- summary(fit, times = time_breaks)
   
   # Convert to data.frame and keep needed components
@@ -899,6 +917,11 @@ km_pooled <- bind_rows(km_df_list, .id = "imputation") %>%
 
 fit_km <- survfit2(Surv(time, status) ~ definition, data = data_km)
 
+# show up to 18 years = 216 months, and label in years
+time_max    <- 216                  # months
+time_breaks <- seq(0, time_max, by = 24)   # every 2 years
+time_labels <- as.character(time_breaks / 12)
+
 # Manually convert survival to cumulative incidence
 fit_km$surv <- 1 - fit_km$surv
 fit_km$lower <- 1 - fit_km$upper
@@ -906,7 +929,10 @@ fit_km$upper <- 1 - fit_km$lower
 
 # Then plot as usual (skip `transform_surv_to_cuminc()`)
 km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
-  scale_x_continuous(breaks = time_breaks, labels = time_labels, limits = c(0, max(time_breaks)))+
+  scale_x_continuous(breaks = time_breaks, labels = time_labels,
+    limits = c(0, time_max),        # <-- crop at 18 years
+    expand = c(0, 0)
+  ) +
  scale_y_continuous(limits = c(0, 0.35),expand = c(0, 0)) +
   labs(
     title = "Cumulative Incidence of D2T RA over Time with All Sensitivity Definitions",
@@ -929,8 +955,9 @@ km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
   theme_ggsurvfit_default() +
   theme(legend.position = "bottom")
 
-final_plot <- km_sens / risk_table_plot + plot_layout(heights = c(3, 1))
-print(final_plot)
+sens_plot <- km_sens / risk_table_plot + plot_layout(heights = c(3, 1))
+print(sens_plot)
+
 ################################################################
 # Stratified Cumulative Incidence Curves 
 ################################################################
@@ -970,6 +997,7 @@ get_stratified_plot <- function(data_node, def = "D2T_step3", strat_var_expr, ti
       fill = NULL
     ) +
     scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  # ← Added this line
+    coord_cartesian(xlim = c(0, 18)) + 
     scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
     theme_minimal(base_size = 13) +
     theme(legend.position = "bottom")
