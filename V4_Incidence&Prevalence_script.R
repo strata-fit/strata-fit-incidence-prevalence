@@ -31,6 +31,14 @@ data_node<- read_csv("Documents/data_node_1507.csv") # Upload your own data
 data_node <- data_node %>%
   filter(!is.na(Visit_months_from_diagnosis))
 
+# Count JAKi as 1 class in tsDMARD
+data_node <- data_node %>%
+  mutate(tsDMARD = case_when(
+    is.na(tsDMARD) ~ NA_real_,
+    tsDMARD >= 1   ~ 1,
+    TRUE           ~ 0
+  ))
+
 # Summary per patient
 patient_summary <- data_node %>%
   filter(!is.na(Visit_months_from_diagnosis)) %>%
@@ -211,7 +219,7 @@ imputed_list <- lapply(1:10, function(i) {
           Pat_global_imp = "Pat_global",
           Ph_global_imp = "Ph_global" )
   df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
-    0.36 * log(df$CRP_imp + 1) + 0.014 * df$Pat_global_imp + 0.96
+    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp 
   return(df)})
 
 names(imputed_list) <- paste0("df_imputed", 1:10)
@@ -275,10 +283,10 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_step1 = ifelse(D2T_crit1 == 1 & D2T_crit2 == 1, 1, 0),
       D2T_step2 = ifelse(D2T_crit1 == 1 & D2T_crit2 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_step3 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3 == 1, 1, 0),
-      D2T_step4 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3b == 1, 1, 0),
-      D2T_step5 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3b == 1 & FU_2000 <= 120, 1, 0),
-      D2T_step6 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3b == 1 & FU_2000 <= 60, 1, 0),
-      D2T_step7 = ifelse(D2T_crit1b == 1 & rol_av_DAS28 >= 3.2 & D2T_crit3b == 1, 1, 0),
+      D2T_step4 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),
+      D2T_step5 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 120, 1, 0),
+      D2T_step6 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 60, 1, 0),
+      D2T_step7 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 60, 1, 0),   # Should we use 3rd MOA prior to step 5 ? 
       
       # Sensitivity analyses
       D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
@@ -562,24 +570,25 @@ def_labels <- c(
   "D2T_step7" = "8. MOA ≥3"
 )
 
-ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color = definition)) +
+Inc_plot <- ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color = definition)) +
   geom_line(size = 1.2) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = definition), alpha = 0.2, color = NA) +
   scale_color_manual(values = scales::hue_pal()(length(defs)), labels = def_labels) +
   scale_fill_manual(values = scales::hue_pal()(length(defs)), labels = def_labels) +
   labs(
     x = "Years from Risk Start",
-    y = "Pooled Cumulative Incidence",
+    y = "Cumulative Incidence",
     color = "Definition",
     fill = "Definition",
-    title = "Pooled Cumulative Incidence of D2T RA Over Time"
+    title = "Cumulative Incidence of D2T RA Over Time per definition in the UMCU"
   ) +
-  scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  # ← Added this line
-  scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
+  scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) + 
+  coord_cartesian(xlim = c(0, 15)) +  # Limit at 15 years of follow-up
+  scale_y_continuous(limits = c(0, 0.40), expand = c(0, 0)) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "right")
 
-
+Inc_plot
 
 ################################################################
 # Baseline Characteristics at different D2T Definitions 
@@ -893,6 +902,7 @@ fit_km$upper <- 1 - fit_km$lower
 # Then plot as usual (skip `transform_surv_to_cuminc()`)
 km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
   scale_x_continuous(breaks = time_breaks, labels = time_labels) +
+  coord_cartesian(xlim = c(0, 15)) +  # Limit at 15 years of follow-up
   scale_y_continuous(limits = c(0, 0.35),expand = c(0, 0)) +
   labs(
     title = "Cumulative Incidence of D2T RA over Time with All Sensitivity Definitions",
@@ -915,8 +925,9 @@ km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
   theme_ggsurvfit_default() +
   theme(legend.position = "bottom")
 
-final_plot <- km_sens / risk_table_plot + plot_layout(heights = c(3, 1))
-print(final_plot)
+Sens_plot <- km_sens / risk_table_plot + plot_layout(heights = c(3, 1))
+print(Sens_plot)
+
 ################################################################
 # Stratified Cumulative Incidence Curves 
 ################################################################
@@ -955,14 +966,15 @@ get_stratified_plot <- function(data_node, def = "D2T_step3", strat_var_expr, ti
       color = NULL,
       fill = NULL
     ) +
-    scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  # ← Added this line
+    scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  
+    coord_cartesian(xlim = c(0, 15)) +  # Limit at 15 years of follow-up
     scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
     theme_minimal(base_size = 13) +
     theme(legend.position = "bottom")
 }
 
 # Figure 3 - Diagnosis Year 
-get_stratified_plot(
+Inc_diag_year <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
   strat_var_expr = case_when(
@@ -971,11 +983,13 @@ get_stratified_plot(
     Year_diagnosis > 2020 ~ ">2020",
     TRUE ~ "Missing"
   ),
+  levels = c("<2006", "2006–2010", "2011–2015", "2016–2020", ">2020", "Missing"),
   title = "Cumulative Incidence by Year of Diagnosis"
 )
+Inc_diag_year
 
 # Figure 4 - Ag at Diagnosis
-get_stratified_plot(
+Inc_diag_age <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
   strat_var_expr = case_when(
@@ -984,30 +998,35 @@ get_stratified_plot(
     Age_diagnosis < 80 ~ "70–80", Age_diagnosis >= 80 ~ ">80",
     TRUE ~ "Missing"
   ),
+  levels = c("<40", "40–50", "50–60", "60–70", "70–80", ">80", "Missing"),
   title = "Cumulative Incidence by Age at Diagnosis"
 )
 
+Inc_diag_age
+
 # Figure 5 - RF-ACCP positivity 
-get_stratified_plot(
+Inc_sero <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
   strat_var_expr = case_when(
     RF_positivity == 1 & anti_CCP == 1 ~ "Both+",
-    RF_positivity == 1 & is.na(anti_CCP) ~ "All RF+",
-    anti_CCP == 1 & is.na(RF_positivity) ~ "All CCP+",
+    RF_positivity == 1  ~ "All RF+",
+    anti_CCP == 1  ~ "All CCP+",
     (RF_positivity == 1 & anti_CCP == 0) |
       (RF_positivity == 0 & anti_CCP == 1) ~ "Either+",
     RF_positivity == 0 & anti_CCP == 0 ~ "Seronegative",
     TRUE ~ "Missing info"
   ),
+  levels = c("Both+", "All RF+", "All CCP+", "Either+", "Seronegative", "Missing info"),
   title = "Cumulative Incidence by Serological Status"
 )
 
+Inc_sero
 ###############################################################################
 #  Prevalence  overall and per gender/age category
 ###############################################################################
 # Base prevalence over time for all 8 definitions
-ydefs <- paste0("D2T_step", 0:7)
+defs <- paste0("D2T_step", 0:7)
 def_labels <- c(
   "D2T_step0" = "1. DMARDs ≥2", "D2T_step1" = "2. + DAS28 ≥ 3.2",
   "D2T_step2" = "3. + VAS >50", "D2T_step3" = "4. Rolling DAS28",
@@ -1047,10 +1066,11 @@ prevalence_pooled <- prev_all %>%
     Definition = factor(Definition, levels = defs, labels = def_labels)
   )
 
-ggplot(prevalence_pooled, aes(x = current_year, y = Prevalence, color = Definition)) +
+
+Prev_plot <- ggplot(prevalence_pooled, aes(x = current_year, y = Prevalence, color = Definition)) +
   geom_line(linewidth = 1.2) +
   labs(
-    title = "Pooled Stepwise D2T RA Prevalence Over Calendar Years",
+    title = "Stepwise D2T RA Prevalence Over Calendar Years",
     x = "Calendar Year",
     y = "Prevalence per 100 Patients",
     color = "D2T Definition"
@@ -1062,7 +1082,9 @@ ggplot(prevalence_pooled, aes(x = current_year, y = Prevalence, color = Definiti
   theme_minimal(base_size = 13) +
   theme(legend.position = "right")
 
+Prev_plot
 
+# Create Table 4 with prevalence labels
 Table4 <- prevalence_pooled %>%
   select(current_year, Definition, Label) %>%
   pivot_wider(names_from = Definition, values_from = Label) %>%
@@ -1361,5 +1383,6 @@ univ_all <- bind_rows(lapply(univ_vars, get_univ))
 
 Table5 <- full_join(univ_all, multi_df, by = "Variable") %>%
   select(Variable, Univariate, Multivariate)
+
 View(Table5)
 
