@@ -26,7 +26,15 @@ library(patchwork)
 ###############################################################################
 #  Data Selection 
 ###############################################################################
-data_node<- read_csv("Documents/data_node_1507.csv") # Upload your own data 
+data_node <- read_csv("~/Documents/data_node_2008.csv")
+
+# Dichotomize tsDMARD due to same MOA
+data_node <- data_node %>%
+  mutate(tsDMARD = case_when(
+    is.na(tsDMARD) ~ NA_real_,
+    tsDMARD >= 1   ~ 1,
+    TRUE           ~ 0
+  ))
 
 data_node <- data_node %>%
   filter(!is.na(Visit_months_from_diagnosis))
@@ -49,16 +57,19 @@ patient_summary <- data_node %>%
     ESR_mean = mean(ESR, na.rm = TRUE),
     CRP_mean = mean(CRP, na.rm = TRUE),
     VAS_patient_mean = mean(Pat_global, na.rm = TRUE),
-    VAS_physician_mean = mean(Ph_global, na.rm = TRUE)
-  ) %>%
+    VAS_physician_mean = mean(Ph_global, na.rm = TRUE),
+    # ---- NEW GC variables ----
+    GC_pct = mean(GC == 1, na.rm = TRUE) * 100,                  # % of visits with GC prescribed
+    GC_highdose_pct = mean(GC_dose >= 7.5, na.rm = TRUE) * 100            # % of visits with dose ≥ 7.5
+   ) %>%
   mutate(
     visits_per_year = ifelse(is.na(FU_years) | FU_years == 0, NA, n_visits / FU_years)
   )
 
-# Build summary table
+# Build summary table.                                                  # ADDITION OF CUM_GC USE 
 Table1 <- list("Female, n (%)" = {
-    tab <- table(patient_summary$Female)
-    paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
+  tab <- table(patient_summary$Female)
+  paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
   "RF-positive, n (%)" = {
     tab <- table(patient_summary$RF_positive)
     paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
@@ -105,7 +116,18 @@ Table1 <- list("Female, n (%)" = {
   "VAS physician" = {
     m <- mean(patient_summary$VAS_physician_mean, na.rm = TRUE)
     s <- sd(patient_summary$VAS_physician_mean, na.rm = TRUE)
-    paste0(round(m, 1), " (", round(s, 1), ")")  })
+    paste0(round(m, 1), " (", round(s, 1), ")")  },
+  
+  # ---- NEW ----
+  "GC use, % of visits" = {
+    m <- mean(patient_summary$GC_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")},
+  "GC ≥7.5mg, % of visits" = {
+    m <- mean(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")}
+  )
 
 # Convert to data frame
 summary_table1 <- data.frame(Variable = names(Table1), Value = unlist(Table1), row.names = NULL)
@@ -118,17 +140,18 @@ n_distinct(data_node$pat_ID)
 ###############################################################################
 #  Create derived variables needed for D2T RA definition and analyses 
 ###############################################################################
-
-#  cumulative DMARD treatment variables 
 data_node <- data_node %>%
   group_by(pat_ID) %>%
+  arrange(Visit_months_from_diagnosis, .by_group = TRUE) %>%
   mutate(
     cum_csDMARD1 = cumsum(!duplicated(csDMARD1) & !is.na(csDMARD1)),
     cum_csDMARD2 = cumsum(!duplicated(csDMARD2) & !is.na(csDMARD2)),
     cum_csDMARD3 = cumsum(!duplicated(csDMARD3) & !is.na(csDMARD3)),
     cum_bDMARD = cumsum(!duplicated(bDMARD) & !is.na(bDMARD)),
     cum_tsDMARD = cumsum(!duplicated(tsDMARD) & !is.na(tsDMARD)),
-    cum_btsDMARD = cum_bDMARD + cum_tsDMARD + N_prev_bDMARD + N_prev_tsDMARD,
+    cum_btsDMARD = cum_bDMARD + cum_tsDMARD +
+      coalesce(as.integer(N_prev_bDMARD), 0L) +
+      coalesce(as.integer(N_prev_tsDMARD), 0L),
     cum_GC = cumsum(!duplicated(GC) & !is.na(GC)),
     cum_csDMARD = max(cum_csDMARD1, cum_csDMARD2, cum_csDMARD3, N_prev_csDMARD, na.rm= TRUE),
     cum_btsDMARDmin = cummin(cum_btsDMARD)) %>% # Define cum_btsDMARDmin (cum_btsDMARDs at start follow-up) for left/period censoring 
@@ -143,7 +166,7 @@ data_node <- data_node %>%
   mutate(
     # mark when cum_btsDMARD increases (a new counted b/tsDMARD start)
     new_DMARD_start = if_else( cum_btsDMARD > lag(cum_btsDMARD, default = 0),
-      Visit_months_from_diagnosis, as.numeric(NA))) %>%
+                               Visit_months_from_diagnosis, as.numeric(NA))) %>%
   fill(new_DMARD_start, .direction = "down") %>%        # carry start time forward
   mutate(delta_DMARD_time = Visit_months_from_diagnosis - new_DMARD_start) %>%
   select(-new_DMARD_start) %>%                           # drop helper
@@ -217,13 +240,13 @@ imputed_list <- lapply(1:10, function(i) {
   df <- complete(imputed_data, i) %>%
     select(c("ESR", "CRP", "TJC28", "SJC28", "Pat_global", "Ph_global")) %>%
     rename(ESR_imp = "ESR",
-          CRP_imp = "CRP",
-          TJC28_imp = "TJC28",
-          SJC28_imp = "SJC28",
-          Pat_global_imp = "Pat_global",
-          Ph_global_imp = "Ph_global" )
+           CRP_imp = "CRP",
+           TJC28_imp = "TJC28",
+           SJC28_imp = "SJC28",
+           Pat_global_imp = "Pat_global",
+           Ph_global_imp = "Ph_global" )
   df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
-    0.36 * log(df$CRP_imp + 1) + 0.014 * df$Pat_global_imp + 0.96
+    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp 
   return(df)})
 
 names(imputed_list) <- paste0("df_imputed", 1:10)
@@ -242,7 +265,8 @@ processed_list <- lapply(1:10, function(i) {
     mutate(
       rol_av_DAS28 = rollmean(DAS28_imp, k = 2, fill = NA, align = "right"),
       rol_av_Pat_global = rollmean(Pat_global_imp, k = 2, fill = NA, align = "right"),
-      rol_av_Ph_global = rollmean(Ph_global_imp, k = 2, fill = NA, align = "right")
+      rol_av_Ph_global = rollmean(Ph_global_imp, k = 2, fill = NA, align = "right"),
+      rol_av_CRP = rollmean(CRP_imp, k = 2, fill = NA, align = "right")
     ) %>%
     ungroup()
   
@@ -265,37 +289,38 @@ names(processed_list) <- paste0("data_node", 1:10)
 final_list <- lapply(processed_list, function(data_node) {
   data_node <- data_node %>%
     mutate(
-      # Criterion 1
-      D2T_crit1 = ifelse(cum_csDMARD > 0 & cum_btsDMARD > 1, 1, 0),
-      D2T_crit1a = ifelse(cum_csDMARD > 0 & cum_btsDMARD > 2, 1, 0),
-      D2T_crit1b = ifelse(cum_csDMARD > 0 & cum_btsDMARD > 2 & FU_2000 < 120, 1, 0),
+      # Criterion 1.  Added time criterium to show failure of the secondary btsDMARD
+      D2T_crit1 = ifelse((cum_csDMARD > 0 & cum_btsDMARD > 2) | (cum_csDMARD > 0 & cum_btsDMARD == 2 & delta_DMARD_time >= 6) , 1, 0),
+      D2T_crit1a = ifelse((cum_csDMARD > 0 & cum_btsDMARD > 3) | (cum_csDMARD > 0 & cum_btsDMARD == 3 & delta_DMARD_time >= 6), 1, 0),
+      D2T_crit1b = ifelse(((cum_csDMARD > 0 & cum_btsDMARD > 2) | (cum_csDMARD > 0 & cum_btsDMARD == 2 & delta_DMARD_time >= 6)) & FU_2000 < 120, 1, 0),
       
-      # Criterion 2
-      D2T_crit2 = ifelse((DAS28_imp > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1)) & delta_DMARD_time >= 6, 1, 0),
-      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1)) & delta_DMARD_time >= 6, 1, 0),
-      D2T_crit2b = ifelse((DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1)) & delta_DMARD_time >= 6, 1, 0),
-      D2T_crit2sens1 = ifelse(DAS28_imp > 3.2, 1, 0),
-      D2T_crit2sens2 = ifelse(DAS28 > 3.2 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
+      
+      # Criterion 2.  # Added Elevated CRP as a description of high disease activity 
+      D2T_crit2 = ifelse((DAS28_imp > 3.2 | CRP_imp > 1.0 |  (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2b = ifelse((DAS28 > 3.2 | CRP_imp > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2sens1 = ifelse(DAS28_imp > 3.2 | CRP_imp > 1.0 , 1, 0),
+      D2T_crit2sens2 = ifelse(DAS28 > 3.2 | CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
       
       # Criterion 3
       D2T_crit3 = ifelse(Pat_global_imp > 50 | Ph_global_imp > 50, 1, 0),
       D2T_crit3a = ifelse(Pat_global_imp > 75 | Ph_global_imp > 75, 1, 0),
       D2T_crit3b = ifelse(Pat_global > 50 | Ph_global > 50, 1, 0),
       
-      # D2T steps
+      # D2T steps. (Seven steps with more restrictive criteria)
       D2T_step0 = ifelse(D2T_crit1 == 1, 1, 0),
       D2T_step1 = ifelse(D2T_crit1 == 1 & D2T_crit2 == 1, 1, 0),
       D2T_step2 = ifelse(D2T_crit1 == 1 & D2T_crit2 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_step3 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3 == 1, 1, 0),
-      D2T_step4 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3b == 1, 1, 0),
-      D2T_step5 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3b == 1 & FU_2000 <= 120, 1, 0),
-      D2T_step6 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3b == 1 & FU_2000 <= 60, 1, 0),
-      D2T_step7 = ifelse(D2T_crit1b == 1 & rol_av_DAS28 >= 3.2 & D2T_crit3b == 1, 1, 0),
+      D2T_step4 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),
+      D2T_step5 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 120, 1, 0),
+      D2T_step6 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 60, 1, 0),
       
       # Sensitivity analyses
       D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_RA_sens2 = ifelse(D2T_crit1 == 1 & D2T_crit2sens2 == 1 & D2T_crit3b == 1, 1, 0),
-      D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0)
+      D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0),
+      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3 == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
     ) %>%
     
     # Ever-D2T variables (per patient)
@@ -312,7 +337,7 @@ final_list <- lapply(processed_list, function(data_node) {
 ###############################################################################
 #  Incidence D2T RA time to first D2T RA
 ################################################################################
-calculate_incidence_per_dataset <- function(data_node, defs = paste0("D2T_step", 0:7), time_point = 60) {
+calculate_incidence_per_dataset <- function(data_node, defs = paste0("D2T_step", 0:6), time_point = 60) {
   
   get_incidence_data <- function(def, data_node) {
     tmp <- data_node %>%
@@ -340,7 +365,7 @@ calculate_incidence_per_dataset <- function(data_node, defs = paste0("D2T_step",
         minFU = min(Visit_months_from_diagnosis, na.rm = TRUE),
         maxFU = max(Visit_months_from_diagnosis, na.rm = TRUE),
         Year_diagnosis = first(Year_diagnosis),
-        cum_btsDMARDmin = max(cum_btsDMARDmin, na.rm = TRUE),
+        cum_btsDMARDmin = first(cum_btsDMARDmin, na.rm = TRUE),
         Age_diagnosis = first(Age_diagnosis),
         anti_CCP = first(anti_CCP),
         RF_positivity = first(RF_positivity),
@@ -446,6 +471,9 @@ Table2_pooled_results  <- incidence_all %>%
   group_modify(~ rubins_rule_pool(.x)) %>%
   ungroup()
 
+
+
+
 ### Plot the Incidence Curve 
 
 # ---- Step 1: Define incidence extraction function ----
@@ -478,7 +506,7 @@ get_incidence_data <- function(def, data_node) {
       Age_diagnosis = first(Age_diagnosis),
       RF_positivity = first(RF_positivity),
       anti_CCP = first(anti_CCP),
-      cum_btsDMARDmin = max(cum_btsDMARDmin, na.rm = TRUE),
+      cum_btsDMARDmin = first(cum_btsDMARDmin, na.rm = TRUE),
       .groups = "drop"
     )
   
@@ -511,11 +539,19 @@ get_incidence_data <- function(def, data_node) {
       )
     )
   
+  # --- NEW: truncate follow-up at 15 years (180 months) ---
+  max_months <- 15 * 12
+  tmp <- tmp %>%
+    mutate(
+      status = ifelse(time > max_months, 0L, status),  # events after 15y become censored
+      time   = pmin(time, max_months)                  # cap time at 15y
+    )
+
   return(tmp)
 }
 
 # ---- Step 2: Run survival for each dataset and definition ----
-defs <- paste0("D2T_step", 0:7)
+defs <- paste0("D2T_step", 0:6)
 
 get_surv_df <- function(data_node, def) {
   data_def <- get_incidence_data(def, data_node) %>%
@@ -570,28 +606,28 @@ def_labels <- c(
   "D2T_step3" = "4. Rolling DAS28",
   "D2T_step4" = "5. VAS >75",
   "D2T_step5" = "6. ≤10y after 2000",
-  "D2T_step6" = "7. ≤5y after 2000",
-  "D2T_step7" = "8. MOA ≥3"
+  "D2T_step6" = "7. ≤5y after 2000"
 )
 
 Inc_plot <- ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color = definition)) +
-  geom_line(size = 1.2) +
+  geom_line(linewidth = 1.2) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = definition), alpha = 0.2, color = NA) +
   scale_color_manual(values = scales::hue_pal()(length(defs)), labels = def_labels) +
   scale_fill_manual(values = scales::hue_pal()(length(defs)), labels = def_labels) +
   labs(
     x = "Years from Risk Start",
-    y = "Pooled Cumulative Incidence",
+    y = "Cumulative Incidence",
     color = "Definition",
     fill = "Definition",
-    title = "Pooled Cumulative Incidence of D2T RA Over Time"
+    title = "Cumulative Incidence of D2T RA Over Time per definition in the UMCU"
   ) +
   scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) + 
-  coord_cartesian(xlim = c(0, 18)) +  # Limit at 18 years of follow-up
-  scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, 15)) +  # Limit at 15 years of follow-up
+  scale_y_continuous(limits = c(0, 0.40), expand = c(0, 0)) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "right")
 
+Inc_plot
 
 ################################################################
 # Baseline Characteristics at different D2T Definitions 
@@ -611,15 +647,27 @@ baseline_list <- lapply(final_list, function(data_node) {
         .groups = "drop"
       ) %>%
       filter(D2T_status == 1)
+    # handle empty subsets so downstream means/SDs don't become NaN/NA
+    if (nrow(data_sub) == 0) {
+      return(tibble(
+        Definition   = def,
+        N            = 0,
+        Female_pct   = NA_real_,
+        RF_pos_pct   = NA_real_,
+        aCCP_pos_pct = NA_real_,
+        Age_mean     = NA_real_,
+        Age_sd       = NA_real_
+      ))
+    }
     
     tibble(
       Definition = def,
       N = nrow(data_sub),
-      Female_pct = mean(data_sub$Sex == 1, na.rm = TRUE) * 100,
-      RF_pos_pct = mean(data_sub$RF == 1, na.rm = TRUE) * 100,
+      Female_pct   = mean(data_sub$Sex == 1, na.rm = TRUE) * 100,
+      RF_pos_pct   = mean(data_sub$RF == 1,  na.rm = TRUE) * 100,
       aCCP_pos_pct = mean(data_sub$aCCP == 1, na.rm = TRUE) * 100,
-      Age_mean = mean(data_sub$Age_diag, na.rm = TRUE),
-      Age_sd = sd(data_sub$Age_diag, na.rm = TRUE)
+      Age_mean     = mean(data_sub$Age_diag,  na.rm = TRUE),
+      Age_sd       = sd(data_sub$Age_diag,    na.rm = TRUE)
     )
   })
 })
@@ -631,17 +679,19 @@ baseline_all <- bind_rows(baseline_list, .id = "Imputation")
 Table3 <- baseline_all %>%
   group_by(Definition) %>%
   summarise(
-    N_mean = mean(N),
-    Female_pct_mean = mean(Female_pct),
-    RF_pos_pct_mean = mean(RF_pos_pct),
-    aCCP_pos_pct_mean = mean(aCCP_pos_pct),
-    Age_mean = mean(Age_mean),
-    Age_sd_pooled = sqrt(mean(Age_sd^2)),  # Pooled SD across datasets
+    N_mean            = mean(N, na.rm = TRUE),
+    Female_pct_mean   = mean(Female_pct,   na.rm = TRUE),
+    RF_pos_pct_mean   = mean(RF_pos_pct,   na.rm = TRUE),
+    aCCP_pos_pct_mean = mean(aCCP_pos_pct, na.rm = TRUE),
+    Age_mean          = mean(Age_mean,     na.rm = TRUE),
+    Age_sd_pooled     = sqrt(mean(Age_sd^2, na.rm = TRUE)),  # Pooled SD across datasets
     .groups = "drop"
   )
 
 # ---- Print nicely ----
 print(Table3)
+
+
 
 ################################################################
 # Average Disease AFTER D2T RA 
@@ -650,7 +700,7 @@ print(Table3)
 pooled_data <- bind_rows(final_list, .id = "imputation_id")
 
 # Definitions (D2T steps)
-defs <- paste0("D2T_step", 0:7)
+defs <- paste0("D2T_step", 0:6)
 
 # Apply to pooled dataset
 Table3b <- purrr::map_dfr(defs, function(def) {
@@ -698,9 +748,13 @@ Table3b <- Table3b %>% mutate(
 
 print(Table3b)
 
+
+
 ################################################################
 # Persistance
 ################################################################
+# Step 1: Combine the 10 imputed + processed datasets
+pooled_data <- bind_rows(final_list, .id = "imputation_id")
 
 # ---- Step 0: Filter cohort (Year_diagnosis >= 2006) ----
 eligible_ids <- pooled_data %>%
@@ -815,11 +869,22 @@ Table3c <- Table3c %>% mutate(
 # View the result
 print(Table3c)
 
+df_persist <- Table3c %>%
+  select(definition, persistence, FU, visits) %>%
+  pivot_longer(cols = -definition, names_to = "metric", values_to = "value")
 
+p_persist <- ggplot(df_persist, aes(definition, as.numeric(str_extract(value, "^[0-9\\.]+")), 
+                                    group = metric, color = metric)) +
+  geom_line() + geom_point() +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = NULL, y = NULL, title = "Persistence & follow-up") +
+  theme_minimal()
+
+p_persist 
 ################################################################
 # Sensitvity analysis 
 ################################################################
-defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3")
+defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4")
 
 get_filtered_data_node <- function(definition, data_node) {
   if (definition == "D2T_RA_sens3") {
@@ -861,31 +926,31 @@ risk_tables <- map(km_data_split, function(df) {
     n.risk = summary_fit$n.risk,
     n.event = summary_fit$n.event )})
 
-    # Combine and average
-    risk_df <- bind_rows(risk_tables, .id = "imputation") %>%
-      group_by(time, strata) %>%
-      summarise(
-        n.risk = round(mean(n.risk, na.rm = TRUE)),
-        n.event = round(mean(n.event, na.rm = TRUE)),
-        .groups = "drop"
-      ) %>%
-      mutate(
-        Definition = sub("definition=", "", strata),
-        time_years = time / 12)
-    
-    risk_table_plot <- risk_df %>%
-      mutate(time_years = as.factor(time_years)) %>%
-      ggplot(aes(x = time_years, y = Definition)) +
-      geom_text(aes(label = paste0(n.risk, " / ", n.event)), size = 3.5) +
-      labs(x = "Years", y = NULL, title = "At Risk / Events") +
-      theme_minimal(base_size = 12) +
-      theme(
-        axis.text.x = element_text(angle = 0, hjust = 0.5),
-        axis.text.y = element_text(hjust = 1),
-        panel.grid = element_blank(),
-        plot.title = element_text(hjust = 0.5),
-        axis.title.x = element_text(margin = margin(t = 5)),
-        axis.ticks = element_blank())
+# Combine and average
+risk_df <- bind_rows(risk_tables, .id = "imputation") %>%
+  group_by(time, strata) %>%
+  summarise(
+    n.risk = round(mean(n.risk, na.rm = TRUE)),
+    n.event = round(mean(n.event, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Definition = sub("definition=", "", strata),
+    time_years = time / 12)
+
+risk_table_plot <- risk_df %>%
+  mutate(time_years = as.factor(time_years)) %>%
+  ggplot(aes(x = time_years, y = Definition)) +
+  geom_text(aes(label = paste0(n.risk, " / ", n.event)), size = 3.5) +
+  labs(x = "Years", y = NULL, title = "At Risk / Events") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.text.y = element_text(hjust = 1),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    axis.title.x = element_text(margin = margin(t = 5)),
+    axis.ticks = element_blank())
 
 # Fit survival models
 
@@ -917,39 +982,46 @@ km_pooled <- bind_rows(km_df_list, .id = "imputation") %>%
 
 fit_km <- survfit2(Surv(time, status) ~ definition, data = data_km)
 
-# show up to 18 years = 216 months, and label in years
-time_max    <- 216                  # months
-time_breaks <- seq(0, time_max, by = 24)   # every 2 years
+# Show up to 15 years = 180 months, and label in years
+time_max    <- 180                        # months (15 years)
+time_breaks <- seq(0, time_max, by = 24)  # every 2 years
 time_labels <- as.character(time_breaks / 12)
 
 # Manually convert survival to cumulative incidence
-fit_km$surv <- 1 - fit_km$surv
+fit_km$surv  <- 1 - fit_km$surv
 fit_km$lower <- 1 - fit_km$upper
 fit_km$upper <- 1 - fit_km$lower
 
 # Then plot as usual (skip `transform_surv_to_cuminc()`)
 km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
-  scale_x_continuous(breaks = time_breaks, labels = time_labels,
-    limits = c(0, time_max),        # <-- crop at 18 years
+  scale_x_continuous(
+    breaks = time_breaks, 
+    labels = time_labels,
+    limits = c(0, time_max),     # <-- crop at 15 years
     expand = c(0, 0)
   ) +
- scale_y_continuous(limits = c(0, 0.35),expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 0.35), expand = c(0, 0)) +
   labs(
     title = "Cumulative Incidence of D2T RA over Time with All Sensitivity Definitions",
     x = "Years from Risk Start",
     y = "Cumulative Incidence of D2T",
-    color = "Definition") +
+    color = "Definition"
+  ) +
   scale_color_manual(
     values = c(
       "D2T_step3" = "#984ea3",
       "D2T_RA_sens1" = "#e41a1c",
       "D2T_RA_sens2" = "#4daf4a",
-      "D2T_RA_sens3" = "#377eb8"),
+      "D2T_RA_sens3" = "#377eb8",
+      "D2T_RA_sens4" = "#ff7f00"
+    ),
     labels = c(
-      "D2T_step3" = "Base Definition (Rolling Average)",
-      "D2T_RA_sens1" = "Sens. 1: No 3rd MOA",
+      "D2T_step3"   = "Base Definition (Rolling Average)",
+      "D2T_RA_sens1" = "Sens. 1: No 3rd MOA for DA",
       "D2T_RA_sens2" = "Sens. 2: No Imputation",
-      "D2T_RA_sens3" = "Sens. 3: Diagnosed ≥ 2006" )
+      "D2T_RA_sens3" = "Sens. 3: Diagnosed ≥ 2006",
+      "D2T_RA_sens4" = "Sens. 4: Crit1 = ≥3 MOAs" 
+    )
   ) +
   guides(fill = "none") +
   theme_ggsurvfit_default() +
@@ -958,148 +1030,225 @@ km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
 sens_plot <- km_sens / risk_table_plot + plot_layout(heights = c(3, 1))
 print(sens_plot)
 
+
 ################################################################
 # Stratified Cumulative Incidence Curves 
 ################################################################
-# Select imputed dataset to use (e.g., first)
+# Use one imputed dataset (e.g., first)
 data_node <- final_list[[1]]
 
-# Generate the `data_inc` for D2T_step3 only
-data_inc <- get_incidence_data("D2T_step3", data_node)
-
-get_stratified_plot <- function(data_node, def = "D2T_step3", strat_var_expr, title = "Stratified Plot") {
-  # Generate incidence data for the selected definition
+get_stratified_plot <- function(data_node,
+                                def = "D2T_step3",
+                                strat_var_expr,
+                                title = "Stratified Plot",
+                                strata_levels = NULL,
+                                x_years_max = 15,
+                                y_max = 0.30) {
+  
+  strat_quosure <- rlang::enquo(strat_var_expr)
+  
+  # Build incidence data & attach strata
   data_inc <- get_incidence_data(def, data_node) %>%
-    filter(status %in% c(0, 1)) %>%
-    mutate(strata = {{ strat_var_expr }})
+    dplyr::filter(status %in% c(0, 1)) %>%
+    dplyr::mutate(strata = !!strat_quosure)
   
-  # Fit stratified Kaplan-Meier
-  fit <- survfit2(Surv(time, status) ~ strata, data = data_inc)
+  # Optional: enforce nice order
+  if (!is.null(strata_levels)) {
+    data_inc <- data_inc %>% dplyr::mutate(strata = factor(strata, levels = strata_levels))
+  }
   
-  # Extract summary and calculate cumulative incidence
-  df <- surv_summary(fit) %>%
-    mutate(
+  # Fit stratified KM (survfit2 returns a survfit-compatible object)
+  fit <- ggsurvfit::survfit2(Surv(time, status) ~ strata, data = data_inc)
+  
+  # Summarize using base survival::summary()
+  sf <- summary(fit)
+  
+  df <- tibble::tibble(
+    time   = sf$time,
+    surv   = sf$surv,
+    lower  = sf$lower,
+    upper  = sf$upper,
+    strata = sf$strata %||% "strata="  # handle NULL edge case
+  ) %>%
+    dplyr::mutate(
+      # Convert survival to cumulative incidence
       cuminc = 1 - surv,
-      lower = 1 - upper,
-      upper = 1 - lower,
+      lower  = 1 - upper,
+      upper  = 1 - lower,
+      # strip "strata=" prefix if present
       strata = sub("^strata=", "", strata)
     )
   
+  # Keep intended order if provided
+  if (!is.null(strata_levels)) {
+    df <- df %>% dplyr::mutate(strata = factor(strata, levels = strata_levels))
+  }
+  
   # Plot
   ggplot(df, aes(x = time / 12, y = cuminc, color = strata)) +
-    geom_step(linewidth = 1.2) +
-    geom_ribbon(aes(ymin = lower, ymax = upper, fill = strata), alpha = 0.1, color = NA) +
+    geom_step(linewidth = 1.2, na.rm = TRUE) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = strata), alpha = 0.12, color = NA) +
     labs(
       title = title,
       x = "Years from Diagnosis",
       y = "Cumulative Incidence",
-      color = NULL,
-      fill = NULL
+      color = NULL, fill = NULL
     ) +
-    scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  # ← Added this line
-    coord_cartesian(xlim = c(0, 18)) + 
-    scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
+    scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +
+    coord_cartesian(xlim = c(0, x_years_max)) +
+    scale_y_continuous(limits = c(0, y_max), expand = c(0, 0)) +
     theme_minimal(base_size = 13) +
     theme(legend.position = "bottom")
 }
 
-# Figure 3 - Diagnosis Year 
-get_stratified_plot(
+# -----------------------
+# Figure 3 – Year of Diagnosis
+# -----------------------
+fig3 <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
-  strat_var_expr = case_when(
-    Year_diagnosis < 2006 ~ "<2006", Year_diagnosis <= 2010 ~ "2006–2010",
-    Year_diagnosis <= 2015 ~ "2011–2015", Year_diagnosis <= 2020 ~ "2016–2020",
-    Year_diagnosis > 2020 ~ ">2020",
+  strat_var_expr = dplyr::case_when(
+    Year_diagnosis < 2006 ~ "<2006",
+    Year_diagnosis <= 2010 ~ "2006–2010",
+    Year_diagnosis <= 2015 ~ "2011–2015",
+    Year_diagnosis <= 2020 ~ "2016–2020",
+    Year_diagnosis > 2020  ~ ">2020",
     TRUE ~ "Missing"
   ),
-  title = "Cumulative Incidence by Year of Diagnosis"
+  strata_levels = c("<2006","2006–2010","2011–2015","2016–2020",">2020","Missing"),
+  title = "Cumulative Incidence by Year of Diagnosis",
+  x_years_max = 15,
+  y_max = 0.30
 )
+print(fig3)
 
-# Figure 4 - Ag at Diagnosis
-get_stratified_plot(
+# -----------------------
+# Figure 4 – Age at Diagnosis
+# -----------------------
+fig4 <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
-  strat_var_expr = case_when(
-    Age_diagnosis < 40 ~ "<40", Age_diagnosis < 50 ~ "40–50",
-    Age_diagnosis < 60 ~ "50–60", Age_diagnosis < 70 ~ "60–70",
-    Age_diagnosis < 80 ~ "70–80", Age_diagnosis >= 80 ~ ">80",
+  strat_var_expr = dplyr::case_when(
+    Age_diagnosis < 40 ~ "<40",
+    Age_diagnosis < 50 ~ "40–50",
+    Age_diagnosis < 60 ~ "50–60",
+    Age_diagnosis < 70 ~ "60–70",
+    Age_diagnosis < 80 ~ "70–80",
+    Age_diagnosis >= 80 ~ "≥80",
     TRUE ~ "Missing"
   ),
-  title = "Cumulative Incidence by Age at Diagnosis"
+  strata_levels = c("<40","40–50","50–60","60–70","70–80","≥80","Missing"),
+  title = "Cumulative Incidence by Age at Diagnosis",
+  x_years_max = 15,
+  y_max = 0.30
 )
+print(fig4)
 
-# Figure 5 - RF-ACCP positivity 
-get_stratified_plot(
+# -----------------------
+# Figure 5 – RF/anti-CCP status
+# -----------------------
+fig5 <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
-  strat_var_expr = case_when(
+  strat_var_expr = dplyr::case_when(
     RF_positivity == 1 & anti_CCP == 1 ~ "Both+",
-    RF_positivity == 1 & is.na(anti_CCP) ~ "All RF+",
-    anti_CCP == 1 & is.na(RF_positivity) ~ "All CCP+",
-    (RF_positivity == 1 & anti_CCP == 0) |
-      (RF_positivity == 0 & anti_CCP == 1) ~ "Either+",
+    RF_positivity == 1 ~ "RF+ ",
+    anti_CCP == 1  ~ "CCP+ ",
+    (RF_positivity == 1 | anti_CCP == 1) ~ "Either+",
     RF_positivity == 0 & anti_CCP == 0 ~ "Seronegative",
-    TRUE ~ "Missing info"
+    TRUE ~ "Missing"
   ),
-  title = "Cumulative Incidence by Serological Status"
+  strata_levels = c("Both+","Either+","Seronegative","RF+ ","CCP+ ","Missing"),
+  title = "Cumulative Incidence by Serological Status",
+  x_years_max = 15,
+  y_max = 0.30
 )
+print(fig5)
+
 
 ###############################################################################
 #  Prevalence  overall and per gender/age category
 ###############################################################################
-# Base prevalence over time for all 8 definitions
-ydefs <- paste0("D2T_step", 0:7)
+###############################################################################
+#  Prevalence overall (steps 0–6)
+###############################################################################
+# Definitions and labels
+ydefs <- paste0("D2T_step", 0:6)
+defs  <- ydefs  # keep a single name downstream
+
 def_labels <- c(
-  "D2T_step0" = "1. DMARDs ≥2", "D2T_step1" = "2. + DAS28 ≥ 3.2",
-  "D2T_step2" = "3. + VAS >50", "D2T_step3" = "4. Rolling DAS28",
-  "D2T_step4" = "5. VAS >75", "D2T_step5" = "6. ≤10y after 2000",
-  "D2T_step6" = "7. ≤5y after 2000","D2T_step7" = "8. MOA ≥3")
+  "D2T_step0" = "1. DMARDs ≥2",
+  "D2T_step1" = "2. + DAS28 ≥ 3.2",
+  "D2T_step2" = "3. + VAS >50",
+  "D2T_step3" = "4. Rolling DAS28",
+  "D2T_step4" = "5. VAS >75",
+  "D2T_step5" = "6. ≤10y after 2000",
+  "D2T_step6" = "7. ≤5y after 2000"
+)
 
 # Collect prevalence data across imputations
-prev_all <- lapply(seq_along(final_list), function(i) { data_node <- final_list[[i]]
+prev_all <- lapply(seq_along(final_list), function(i) {
+  data_node <- final_list[[i]]
+  
   data_node %>%
     filter(current_year > 2005) %>%
     select(pat_ID, current_year, all_of(defs)) %>%
-    pivot_longer(cols = defs, names_to = "Definition", values_to = "D2T") %>%
+    pivot_longer(cols = all_of(defs), names_to = "Definition", values_to = "D2T") %>%
     group_by(pat_ID, current_year, Definition) %>%
-    summarise(D2T = ifelse(all(is.na(D2T)), NA, max(D2T, na.rm = TRUE)), .groups = "drop") %>%
-    group_by(current_year, Definition) %>%
     summarise(
-      N = n(),
-      p = mean(D2T, na.rm = TRUE),
+      D2T = ifelse(all(is.na(D2T)), NA, max(D2T, na.rm = TRUE)),
       .groups = "drop"
     ) %>%
-    mutate(imputation = i)
-}) %>%
-  bind_rows()
+    group_by(current_year, Definition) %>%
+    summarise(
+      N_total = n(),
+      N_eff   = sum(!is.na(D2T)),                 # non-missing visits contributing
+      p       = mean(D2T, na.rm = TRUE),          # mean prevalence across patients
+      .groups = "drop"
+    ) %>%
+    mutate(
+      p = ifelse(is.nan(p), NA_real_, p),         # guard against NaN when all NA
+      imputation = i
+    )
+}) %>% bind_rows()
 
+# Rubin-style pooling over imputations (per year x definition)
 prevalence_pooled <- prev_all %>%
   group_by(current_year, Definition) %>%
   summarise(
-    M = n(),  # should be 10 imputations
-    p_bar = mean(p),  u_bar = mean(p * (1 - p) / N),
-    b = var(p), T_var = u_bar + (1 + 1/M) * b,
-    SE = sqrt(T_var), LL = pmax(0, p_bar - 1.96 * SE),   UL = pmin(1, p_bar + 1.96 * SE),
+    M     = n(),                                  # number of imputations contributing
+    p_bar = mean(p, na.rm = TRUE),                # pooled prevalence
+    u_bar = mean((p * (1 - p)) / pmax(N_eff, 1),  # within-imputation var (binomial approx)
+                 na.rm = TRUE),
+    b     = var(p, na.rm = TRUE),                 # between-imputation var
+    T_var = u_bar + (1 + 1/M) * b,
+    SE    = sqrt(T_var),
+    LL    = pmax(0, p_bar - 1.96 * SE),
+    UL    = pmin(1, p_bar + 1.96 * SE),
     .groups = "drop"
   ) %>%
   mutate(
-    Prevalence = round(p_bar * 100, 2), LL = round(LL * 100, 2),  UL = round(UL * 100, 2),
-    Label = paste0(Prevalence, " (", LL, ", ", UL, ")"),
-    Definition = factor(Definition, levels = defs, labels = def_labels)
-  )
+    Definition = factor(Definition, levels = defs,
+                        labels = unname(def_labels[defs])),
+    Prevalence = p_bar * 100,
+    LL = LL * 100,
+    UL = UL * 100,
+    Label = sprintf("%.2f (%.2f, %.2f)", Prevalence, LL, UL)
+  ) %>%
+  filter(!is.na(Prevalence))                      # drop rows where all imputations were NA
 
+# Plot
 ggplot(prevalence_pooled, aes(x = current_year, y = Prevalence, color = Definition)) +
-  geom_line(linewidth = 1.2) +
+  geom_line(linewidth = 1.2, na.rm = TRUE) +
   labs(
-    title = "Pooled Stepwise D2T RA Prevalence Over Calendar Years",
+    title = "Stepwise D2T RA Prevalence Over Calendar Years in the UMCU",
     x = "Calendar Year",
     y = "Prevalence per 100 Patients",
     color = "D2T Definition"
   ) +
   scale_x_continuous(
-    limits = c(min(prevalence_pooled$current_year), 2024),
-    breaks = seq(min(prevalence_pooled$current_year), 2024, by = 2)
+    limits = c(min(prevalence_pooled$current_year, na.rm = TRUE), 2024),
+    breaks = seq(min(prevalence_pooled$current_year, na.rm = TRUE), 2024, by = 2)
   ) +
   theme_minimal(base_size = 13) +
   theme(legend.position = "right")
@@ -1120,10 +1269,10 @@ data_node_prev <- data_node %>%
   filter(current_year > 2005) %>%
   group_by(pat_ID, current_year) %>%
   summarise(
-    D2T_step3 = max(D2T_step3, na.rm = TRUE),
-    Sex = max(Sex),
-    RF = max(RF_positivity, na.rm = TRUE),
-    anti_CCP = max(anti_CCP, na.rm = TRUE),
+    D2T_step3 = ifelse(all(is.na(D2T_step3)), NA, max(D2T_step3, na.rm = TRUE)),
+    Sex = first(Sex),  # no aggregation needed if constant per patient
+    RF = ifelse(all(is.na(RF_positivity)), NA, max(RF_positivity, na.rm = TRUE)),
+    anti_CCP = ifelse(all(is.na(anti_CCP)), NA, max(anti_CCP, na.rm = TRUE)),
     current_age_cat = first(current_age_cat),
     .groups = "drop"
   )
@@ -1132,7 +1281,7 @@ data_node_prev <- data_node %>%
 age_cuts <- c(0, 40, 50, 60, 70, 80, Inf)
 age_labels <- c("1" = "< 40", "2" = "40–50","3" = "50–60","4" = "60–70", "5" = "70–80", "6" = "> 80")
 
- # Collect stratified prevalence across imputations
+# Collect stratified prevalence across imputations
 prev_age_list <- lapply(seq_along(final_list), function(i) {
   data_node <- final_list[[i]]
   data_node %>%
@@ -1152,11 +1301,11 @@ prev_age_list <- lapply(seq_along(final_list), function(i) {
 prev_age_pooled <- prev_age_list %>%
   group_by(current_year, age_group) %>%
   summarise( M = n(),  p_bar = mean(p),  u_bar = mean(p * (1 - p) / N),
-    b = var(p),   T_var = u_bar + (1 + 1/M) * b,   SE = sqrt(T_var),  LL = pmax(0, p_bar - 1.96 * SE),   
-    UL = pmin(1, p_bar + 1.96 * SE),  .groups = "drop"
+             b = var(p),   T_var = u_bar + (1 + 1/M) * b,   SE = sqrt(T_var),  LL = pmax(0, p_bar - 1.96 * SE),   
+             UL = pmin(1, p_bar + 1.96 * SE),  .groups = "drop"
   ) %>%
   mutate(  Prevalence = round(p_bar * 100, 2),   LL = round(LL * 100, 2),    UL = round(UL * 100, 2),
-    Label = paste0(Prevalence, " (", LL, ", ", UL, ")")
+           Label = paste0(Prevalence, " (", LL, ", ", UL, ")")
   )
 p_age <- ggplot(prev_age_pooled, aes(x = current_year, y = Prevalence, color = age_group)) +
   geom_line(linewidth = 1.2) +
@@ -1181,7 +1330,7 @@ prev_gender_list <- lapply(seq_along(final_list), function(i) {
     group_by(pat_ID, current_year, Sex) %>%
     summarise(D2T = ifelse(all(is.na(D2T_step2)), NA, max(D2T_step2, na.rm = TRUE)), .groups = "drop") %>%
     group_by(current_year, Sex) %>%
-   summarise(  N = n(),   p = mean(D2T, na.rm = TRUE),   .groups = "drop"
+    summarise(  N = n(),   p = mean(D2T, na.rm = TRUE),   .groups = "drop"
     ) %>%
     mutate(imputation = i)
 }) %>%
@@ -1290,8 +1439,6 @@ p_markers <- ggplot(prev_sero_pooled, aes(x = current_year, y = Prevalence, colo
   theme(legend.position = "bottom")
 
 p_markers 
-
-
 
 
 ################################################################
@@ -1404,4 +1551,3 @@ univ_all <- bind_rows(lapply(univ_vars, get_univ))
 Table5 <- full_join(univ_all, multi_df, by = "Variable") %>%
   select(Variable, Univariate, Multivariate)
 View(Table5)
-
