@@ -36,7 +36,7 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_RA_sens2 = ifelse(D2T_crit1 == 1 & D2T_crit2sens2 == 1 & D2T_crit3b == 1, 1, 0),
       D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0),
-      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
+      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3 == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
     ) %>%
     
     # Ever-D2T variables (per patient)
