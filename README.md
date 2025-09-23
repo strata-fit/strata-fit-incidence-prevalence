@@ -17,7 +17,7 @@ These steps ensure consistency in local preprocessing before contributions are s
 
 
 
-> All patient-level data **remains local** and is never committed or shared. Only aggregated summaries are exported for federation.
+> All patient-level data **remains local** and is never committed or shared. Only aggregated summaries are exported and shared with WP3. 
 
 ##  Getting Started
 
@@ -41,11 +41,10 @@ install.packages(c("dplyr", "ggplot2", "survival", "survminer", "readr", "purrr"
 Update your `.R` scripts to load your center’s data, then execute:
 
 ```r
-source("scripts/01_prevalence_analysis.R")
-source("scripts/02_incidence_analysis.R")
+source("V5_Incidence&Prevalence_script.R")
 ```
 
-The output plots and tables will appear in the `/outputs` folder.
+The output plots and tables will appear in the `/output' on the side. Please upload these files into an excel or within the Synopsis Paper shared. 
 
 ## Background
 
