@@ -44,6 +44,17 @@ Update your `.R` scripts to load your center’s data, then execute:
 source("V5_Incidence&Prevalence_script.R")
 ```
 
+It is important to run the code in the followin sequence if you wish you run it separatly and no in the full version. 
+
+```r
+source("V5_Preprocessing&Imputation.R")
+source("V5_D2TDefinitions.R")
+source("V5_Incidence&Sensitivity.R")
+source("V5_Persistance.R")
+source("V5_Prevalence&CoxRegression.R")
+```
+
+
 The output plots and tables will appear in the `/output' on the side. Please upload these files into an excel or within the Synopsis Paper shared. 
 
 ## Background
