@@ -249,7 +249,7 @@ imputed_list <- lapply(1:10, function(i) {
            Pat_global_imp = "Pat_global",
            Ph_global_imp = "Ph_global" )
   df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
-    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp 
+    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp                           # adjusted formula for DAS28 from CRP to ESR, to allign with the codebook 
   return(df)})
 
 names(imputed_list) <- paste0("df_imputed", 1:10)
@@ -269,7 +269,7 @@ processed_list <- lapply(1:10, function(i) {
       rol_av_DAS28 = rollmean(DAS28_imp, k = 2, fill = NA, align = "right"),
       rol_av_Pat_global = rollmean(Pat_global_imp, k = 2, fill = NA, align = "right"),
       rol_av_Ph_global = rollmean(Ph_global_imp, k = 2, fill = NA, align = "right"),
-      rol_av_CRP = rollmean(CRP_imp, k = 2, fill = NA, align = "right")
+      rol_av_CRP = rollmean(CRP_imp, k = 2, fill = NA, align = "right")                    # Added rolling average CRP as new assessment of Criterium 2
     ) %>%
     ungroup()
   
