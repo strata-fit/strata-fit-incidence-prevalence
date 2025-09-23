@@ -1,0 +1,131 @@
+################################################################
+# Persistance
+################################################################
+# Step 1: Combine the 10 imputed + processed datasets
+pooled_data <- bind_rows(final_list, .id = "imputation_id")
+
+# ---- Step 0: Filter cohort (Year_diagnosis >= 2006) ----
+eligible_ids <- pooled_data %>%
+  group_by(pat_ID) %>%
+  summarise(Year_diagnosis = first(Year_diagnosis), .groups = "drop") %>%
+  filter(Year_diagnosis >= 2006) %>%
+  pull(pat_ID)
+
+pooled_data2 <- pooled_data %>%
+  filter(pat_ID %in% eligible_ids)
+
+# ---- Step 1: Calculate Persistence ----
+persistence_df <- purrr::map_dfr(defs, function(def) {
+  
+  d2t_first <- pooled_data2 %>%
+    filter(.data[[def]] == 1) %>%
+    group_by(pat_ID) %>%
+    summarise(
+      first_D2T_time = min(Visit_months_from_diagnosis, na.rm = TRUE),
+      definition = def,
+      .groups = "drop"
+    )
+  
+  post_d2t_data <- pooled_data2 %>%
+    semi_join(d2t_first, by = "pat_ID") %>%
+    inner_join(d2t_first, by = "pat_ID") %>%
+    filter(Visit_months_from_diagnosis >= first_D2T_time) %>%
+    mutate(definition = def, is_D2T = .data[[def]] == 1)
+  
+  persistence <- post_d2t_data %>%
+    group_by(pat_ID, definition) %>%
+    summarise(
+      total_visits = n(),
+      d2t_visits = sum(is_D2T, na.rm = TRUE),
+      persistence = d2t_visits / total_visits,
+      .groups = "drop"
+    ) %>%
+    filter(total_visits > 1)  # Optional filter
+  
+  return(persistence)
+})
+
+# ---- Step 2: Summary of Persistence ----
+persistence_summary <- persistence_df %>%
+  group_by(definition) %>%
+  summarise(
+    mean_persistence   = mean(persistence, na.rm = TRUE),
+    sd_persistence     = sd(persistence, na.rm = TRUE),
+    median_persistence = median(persistence, na.rm = TRUE),
+    Q1                 = quantile(persistence, 0.25, na.rm = TRUE),
+    Q3                 = quantile(persistence, 0.75, na.rm = TRUE),
+    min_persistence    = min(persistence, na.rm = TRUE),
+    max_persistence    = max(persistence, na.rm = TRUE),
+    N_patients         = n(),
+    .groups = "drop"
+  )
+
+# ---- Step 3: Follow-up Summary per Definition ----
+followup_df <- purrr::map_dfr(defs, function(def) {
+  d2t_first <- pooled_data2 %>%
+    filter(.data[[def]] == 1) %>%
+    group_by(pat_ID) %>%
+    summarise(
+      first_D2T_time = min(Visit_months_from_diagnosis, na.rm = TRUE),
+      definition = def,
+      .groups = "drop"
+    )
+  
+  post_d2t <- pooled_data2 %>%
+    semi_join(d2t_first, by = "pat_ID") %>%
+    inner_join(d2t_first, by = "pat_ID") %>%
+    filter(Visit_months_from_diagnosis >= first_D2T_time) %>%
+    mutate(definition = def)
+  
+  patient_summary <- post_d2t %>%
+    group_by(pat_ID, definition) %>%
+    summarise(
+      followup_months = max(Visit_months_from_diagnosis) - first(first_D2T_time),
+      n_visits = n_distinct(Visit_months_from_diagnosis),  # 
+      .groups = "drop"
+    )
+  
+  return(patient_summary)
+})
+
+followup_summary <- followup_df %>%
+  group_by(definition) %>%
+  summarise(
+    mean_followup_months   = mean(followup_months, na.rm = TRUE),
+    sd_followup_months     = sd(followup_months, na.rm = TRUE),
+    median_followup_months = median(followup_months, na.rm = TRUE),
+    
+    mean_n_visits          = mean(n_visits, na.rm = TRUE),
+    sd_n_visits            = sd(n_visits, na.rm = TRUE),
+    median_n_visits        = median(n_visits, na.rm = TRUE),
+    Q1_n_visits            = quantile(n_visits, 0.25, na.rm = TRUE),
+    Q3_n_visits            = quantile(n_visits, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ---- Final Combined Summary Table (Optional) ----
+Table3c <- persistence_summary %>%
+  left_join(followup_summary, by = "definition")
+
+Table3c <- Table3c %>% mutate(
+  persistence =  paste0(round(median_persistence,2) , " (", round(Q1, 2), "-",round(Q3, 2),") "),
+  FU =  paste0(round(mean_followup_months,2) , " (", round(sd_followup_months, 2), ") "),
+  visits =  paste0(round(mean_n_visits,2) , " (", round(sd_n_visits, 2), ") "),
+  median_visits =  paste0(round(median_n_visits,2) , " (", round(Q1_n_visits, 2), "-",round(Q3_n_visits, 2), ") ")) %>%
+  select(definition, persistence, FU, visits, median_visits)
+
+# View the result
+print(Table3c)
+
+df_persist <- Table3c %>%
+  select(definition, persistence, FU, visits) %>%
+  pivot_longer(cols = -definition, names_to = "metric", values_to = "value")
+
+p_persist <- ggplot(df_persist, aes(definition, as.numeric(str_extract(value, "^[0-9\\.]+")), 
+                                    group = metric, color = metric)) +
+  geom_line() + geom_point() +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = NULL, y = NULL, title = "Persistence & follow-up") +
+  theme_minimal()
+
+p_persist 
