@@ -1,0 +1,286 @@
+###############################################################################
+# Incidence and Prevalence of D2T RA 
+# VERSION 5.0
+# P.M.J. Welsing & C. Ripepi Sept 2025
+###############################################################################
+rm(list = ls())
+
+library(dplyr)
+library(mice)
+library(ggplot2)
+library(ggsurvfit)
+library(survival)
+library(haven)
+library(survminer)
+library(readr)
+library(tidyverse)
+library(zoo)
+library(lattice)
+library(mitml)
+library(pan)
+library(data.table)
+library(broom)
+library(patchwork)
+
+
+###############################################################################
+#  Data Selection 
+###############################################################################
+data_node <- read_csv("~/Documents/data_node_2008.csv")   ## Here upload your own data.
+
+
+# Dichotomization of the tsDMARD due to having same more of action coded as different classifiers.
+data_node <- data_node %>%
+  mutate(tsDMARD = case_when(
+    is.na(tsDMARD) ~ NA_real_,
+    tsDMARD >= 1   ~ 1,
+    TRUE           ~ 0
+  ))
+
+
+data_node <- data_node %>%
+  filter(!is.na(Visit_months_from_diagnosis))
+
+# Summary per patient
+patient_summary <- data_node %>%
+  filter(!is.na(Visit_months_from_diagnosis)) %>%
+  group_by(pat_ID) %>%
+  summarise(
+    Female = first(Sex == 1),
+    RF_positive = first(RF_positivity == 1),
+    aCCP_positive = first(anti_CCP == 1),
+    Age_diagnosis = first(Age_diagnosis),
+    Year_diagnosis = first(Year_diagnosis),
+    FU_years = max(Visit_months_from_diagnosis, na.rm = TRUE) / 12,
+    n_visits = n(),
+    DAS28_mean = mean(DAS28, na.rm = TRUE),
+    SJC28_mean = mean(SJC28, na.rm = TRUE),
+    TJC28_mean = mean(TJC28, na.rm = TRUE),
+    ESR_mean = mean(ESR, na.rm = TRUE),
+    CRP_mean = mean(CRP, na.rm = TRUE),
+    VAS_patient_mean = mean(Pat_global, na.rm = TRUE),
+    VAS_physician_mean = mean(Ph_global, na.rm = TRUE),
+    # ---- NEW GC variables ----
+    GC_pct = mean(GC_presence == 1, na.rm = TRUE) * 100,                  # % of visits with GC prescribed
+    GC_highdose_pct = mean(GC_dose >= 7.5, na.rm = TRUE) * 100            # % of visits with dose ≥ 7.5
+    
+  ) %>%
+  mutate(
+    visits_per_year = ifelse(is.na(FU_years) | FU_years == 0, NA, n_visits / FU_years)
+  )
+
+# Build summary table.                                                  # ADDITION OF CUM_GC USE 
+Table1 <- list("Female, n (%)" = {
+  tab <- table(patient_summary$Female)
+  paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
+  "RF-positive, n (%)" = {
+    tab <- table(patient_summary$RF_positive)
+    paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
+  "aCCP-positive, n (%)" = {
+    tab <- table(patient_summary$aCCP_positive)
+    paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)")},
+  "Age at diagnosis" = {
+    m <- mean(patient_summary$Age_diagnosis, na.rm = TRUE)
+    s <- sd(patient_summary$Age_diagnosis, na.rm = TRUE)
+    paste0(round(m, 1), " (", round(s, 1), ")")},
+  "Initial calendar year of follow-up" = {
+    m <- mean(patient_summary$Year_diagnosis, na.rm = TRUE)
+    s <- sd(patient_summary$Year_diagnosis, na.rm = TRUE)
+    paste0(round(m, 1), " (", round(s, 1), ")")},
+  "Follow-up (years)" = {
+    q <- quantile(patient_summary$FU_years, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    paste0(round(q[2], 1), " (", round(q[1], 1), "–", round(q[3], 1), ")")},
+  "# visits per patient per year" = {
+    m <- mean(patient_summary$visits_per_year, na.rm = TRUE)
+    s <- sd(patient_summary$visits_per_year, na.rm = TRUE)
+    paste0(round(m, 1), " (", round(s, 1), ")")},
+  "DAS28" = {
+    m <- mean(patient_summary$DAS28_mean, na.rm = TRUE)
+    s <- sd(patient_summary$DAS28_mean, na.rm = TRUE)
+    paste0(round(m, 2), " (", round(s, 2), ")")},
+  "28SJC" = {
+    m <- mean(patient_summary$SJC28_mean, na.rm = TRUE)
+    s <- sd(patient_summary$SJC28_mean, na.rm = TRUE)
+    paste0(round(m, 2), " (", round(s, 2), ")") },
+  "28TJC" = {
+    m <- mean(patient_summary$TJC28_mean, na.rm = TRUE)
+    s <- sd(patient_summary$TJC28_mean, na.rm = TRUE)
+    paste0(round(m, 2), " (", round(s, 2), ")")},
+  "ESR, median (Q1, Q3)" = {
+    q <- quantile(patient_summary$ESR_mean, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    paste0(round(q[2], 1), " (", round(q[1], 1), "–", round(q[3], 1), ")")},
+  "CRP, median (Q1, Q3)" = {
+    q <- quantile(patient_summary$CRP_mean, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    paste0(round(q[2], 1), " (", round(q[1], 1), "–", round(q[3], 1), ")")},
+  "VAS patient" = {
+    m <- mean(patient_summary$VAS_patient_mean, na.rm = TRUE)
+    s <- sd(patient_summary$VAS_patient_mean, na.rm = TRUE)
+    paste0(round(m, 1), " (", round(s, 1), ")")},
+  "VAS physician" = {
+    m <- mean(patient_summary$VAS_physician_mean, na.rm = TRUE)
+    s <- sd(patient_summary$VAS_physician_mean, na.rm = TRUE)
+    paste0(round(m, 1), " (", round(s, 1), ")")  },
+  
+  # ---- NEW ----
+  "GC use, % of visits" = {
+    m <- mean(patient_summary$GC_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")},
+  "GC ≥7.5mg, % of visits" = {
+    m <- mean(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")}
+)
+
+# Convert to data frame
+summary_table1 <- data.frame(Variable = names(Table1), Value = unlist(Table1), row.names = NULL)
+print(summary_table1)
+
+data_node <- data_node[order(data_node$pat_ID, data_node$Visit_months_from_diagnosis),]
+rm(patient_summary, summary_table1)
+n_distinct(data_node$pat_ID)
+
+###############################################################################
+#  Create derived variables needed for D2T RA definition and analyses 
+###############################################################################
+data_node <- data_node %>%
+  group_by(pat_ID) %>%
+  arrange(Visit_months_from_diagnosis, .by_group = TRUE) %>%
+  mutate(
+    cum_csDMARD1 = cumsum(!duplicated(csDMARD1) & !is.na(csDMARD1)),
+    cum_csDMARD2 = cumsum(!duplicated(csDMARD2) & !is.na(csDMARD2)),
+    cum_csDMARD3 = cumsum(!duplicated(csDMARD3) & !is.na(csDMARD3)),
+    cum_bDMARD = cumsum(!duplicated(bDMARD) & !is.na(bDMARD)),
+    cum_tsDMARD = cumsum(!duplicated(tsDMARD) & !is.na(tsDMARD)),
+    cum_btsDMARD = cum_bDMARD + cum_tsDMARD +
+      coalesce(as.integer(N_prev_bDMARD), 0L) +
+      coalesce(as.integer(N_prev_tsDMARD), 0L),
+    cum_GC = cumsum(!duplicated(GC) & !is.na(GC)),
+    cum_csDMARD = max(cum_csDMARD1, cum_csDMARD2, cum_csDMARD3, N_prev_csDMARD, na.rm= TRUE),
+    cum_btsDMARDmin = cummin(cum_btsDMARD)) %>% # Define cum_btsDMARDmin (cum_btsDMARDs at start follow-up) for left/period censoring 
+  ungroup()
+
+#define current calender year variable
+data_node$current_year <- round(data_node$Year_diagnosis + (data_node$month_diagnosis/12) +  (data_node$Visit_months_from_diagnosis)/12)
+
+data_node <- data_node %>%
+  group_by(pat_ID) %>%
+  arrange(Visit_months_from_diagnosis) %>%
+  mutate(
+    # mark when cum_btsDMARD increases (a new counted b/tsDMARD start)
+    new_DMARD_start = if_else( cum_btsDMARD > lag(cum_btsDMARD, default = 0),
+                               Visit_months_from_diagnosis, as.numeric(NA))) %>%
+  fill(new_DMARD_start, .direction = "down") %>%        # carry start time forward
+  mutate(delta_DMARD_time = Visit_months_from_diagnosis - new_DMARD_start) %>%
+  select(-new_DMARD_start) %>%                           # drop helper
+  ungroup()
+
+#define current age / age category
+data_node$current_age <- round(data_node$Age_diagnosis + (data_node$Visit_months_from_diagnosis/12) + 0.5) 
+#current age categories
+data_node$current_age_cat <- factor(
+  ifelse(data_node$current_age < 40, '< 40',
+         ifelse(data_node$current_age < 50, '40-50',
+                ifelse(data_node$current_age < 60, '50-60',
+                       ifelse(data_node$current_age < 70, '60-70',
+                              ifelse(data_node$current_age < 80, '70-80',
+                                     ifelse(data_node$current_age >= 80, '> 80', NA)))))),
+  levels = c('< 40', '40-50', '50-60', '60-70', '70-80', '> 80'))
+
+# define MOA change & Identify increases in cumulative MOA
+data_node <- data_node %>%
+  group_by(pat_ID) %>%
+  arrange(Visit_months_from_diagnosis) %>%
+  mutate(changed_MOA = ifelse(cum_btsDMARD > lag(cum_btsDMARD, default = 0), 1, 0)) %>%
+  ungroup()
+
+###############################################################################
+#  Create imputed DAS28, components, and VAS_phys
+###############################################################################
+imputation_vars <- c("DAS28", "ESR", "CRP", "TJC28", "SJC28", "Pat_global", "Ph_global")  # Variables to be imputed
+auxiliary_vars <- c("Visit_months_from_diagnosis", "Age_diagnosis", "Sex", "changed_MOA")  # Auxiliary variables (used for imputation, not imputed)
+data_for_imputation <- data_node %>%
+  select(all_of(c(imputation_vars, auxiliary_vars)))
+
+#Create Predictor Matrix (Defines relationships between variables)
+predictor_matrix <- make.predictorMatrix(data_for_imputation)
+
+# Set auxiliary variables as predictors (but not to be imputed)
+predictor_matrix[auxiliary_vars, ] <- 1  # Auxiliary variables predict other variables
+predictor_matrix[, auxiliary_vars] <- 1  # Auxiliary variables can be used for imputation
+predictor_matrix[auxiliary_vars, auxiliary_vars] <- 0  # Auxiliary variables themselves are not imputed
+
+# Define Imputation Methods
+method_vector <- rep("", ncol(data_for_imputation))  # Default to no imputation
+names(method_vector) <- colnames(data_for_imputation)  # Ensure names match dataset columns
+
+# Apply "pmm" method only to variables that need imputation
+method_vector[imputation_vars] <- "pmm"  # Predictive Mean Matching for imputation
+
+# Perform Multiple Imputation Using MICE
+imputed_data <- mice(
+  data_for_imputation,
+  m = 10,                   # Number of imputed datasets
+  method = method_vector,   # Apply "pmm" to imputed variables only
+  predictorMatrix = predictor_matrix, 
+  maxit = 10,               # More iterations for better convergence
+  printFlag = TRUE  )        # Show progress
+
+#Extract One of the Imputed Datasets 
+df_imputed <- complete(imputed_data, 1)
+df_imputed2 <- complete(imputed_data, 2)
+df_imputed3 <- complete(imputed_data, 3)
+df_imputed4 <- complete(imputed_data, 4)
+df_imputed5 <- complete(imputed_data, 5)
+df_imputed6 <- complete(imputed_data, 6)
+df_imputed7 <- complete(imputed_data, 7)
+df_imputed8 <- complete(imputed_data, 8)
+df_imputed9 <- complete(imputed_data, 9)
+df_imputed10 <- complete(imputed_data, 10)
+
+# Apply the operations to each imputed dataset
+imputed_list <- lapply(1:10, function(i) {
+  df <- complete(imputed_data, i) %>%
+    select(c("ESR", "CRP", "TJC28", "SJC28", "Pat_global", "Ph_global")) %>%
+    rename(ESR_imp = "ESR",
+           CRP_imp = "CRP",
+           TJC28_imp = "TJC28",
+           SJC28_imp = "SJC28",
+           Pat_global_imp = "Pat_global",
+           Ph_global_imp = "Ph_global" )
+  df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
+    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp 
+  return(df)})
+
+names(imputed_list) <- paste0("df_imputed", 1:10)
+
+# Wrap post-imputation processing into a loop
+processed_list <- lapply(1:10, function(i) {
+  # Combine with original variables (e.g., IDs, visit time, diagnosis year)
+  data_node <- cbind(data_node, imputed_list[[i]])
+  
+  # Sort by patient ID and visit time
+  data_node <- data_node[order(data_node$pat_ID, data_node$Visit_months_from_diagnosis), ]
+  
+  # Add rolling averages
+  data_node <- data_node %>%
+    group_by(pat_ID) %>%
+    mutate(
+      rol_av_DAS28 = rollmean(DAS28_imp, k = 2, fill = NA, align = "right"),
+      rol_av_Pat_global = rollmean(Pat_global_imp, k = 2, fill = NA, align = "right"),
+      rol_av_Ph_global = rollmean(Ph_global_imp, k = 2, fill = NA, align = "right"),
+      rol_av_CRP = rollmean(CRP_imp, k = 2, fill = NA, align = "right")
+    ) %>%
+    ungroup()
+  
+  # Compute follow-up from year 2000
+  data_node$FU_2000 <- ifelse(
+    data_node$Year_diagnosis >= 2000,
+    data_node$Visit_months_from_diagnosis,
+    data_node$Visit_months_from_diagnosis - ((2000 - data_node$Year_diagnosis) * 12)
+  )
+  
+  return(data_node)
+})
+
+names(processed_list) <- paste0("data_node", 1:10)
