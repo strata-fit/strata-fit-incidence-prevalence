@@ -1,0 +1,173 @@
+###############################################################################
+#  D2T Criteria 
+###############################################################################
+# Apply D2T logic to all 10 datasets
+final_list <- lapply(processed_list, function(data_node) {
+  data_node <- data_node %>%
+    mutate(
+      # Criterion 1.  Added time criterium to show failure of the secondary btsDMARD
+      D2T_crit1 = ifelse((cum_csDMARD > 0 & cum_btsDMARD > 2) | (cum_csDMARD > 0 & cum_btsDMARD == 2 & delta_DMARD_time >= 6) , 1, 0),
+      D2T_crit1a = ifelse((cum_csDMARD > 0 & cum_btsDMARD > 3) | (cum_csDMARD > 0 & cum_btsDMARD == 3 & delta_DMARD_time >= 6), 1, 0),
+      D2T_crit1b = ifelse(((cum_csDMARD > 0 & cum_btsDMARD > 2) | (cum_csDMARD > 0 & cum_btsDMARD == 2 & delta_DMARD_time >= 6)) & FU_2000 < 120, 1, 0),
+      
+      
+      # Criterion 2.  # Added Elevated CRP as a description of high disease activity 
+      D2T_crit2 = ifelse((DAS28_imp > 3.2 | CRP_imp > 1.0 |  (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2b = ifelse((DAS28 > 3.2 | CRP_imp > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2sens1 = ifelse(DAS28_imp > 3.2 | CRP_imp > 1.0 , 1, 0),
+      D2T_crit2sens2 = ifelse(DAS28 > 3.2 | CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
+      
+      # Criterion 3
+      D2T_crit3 = ifelse(Pat_global_imp > 50 | Ph_global_imp > 50, 1, 0),
+      D2T_crit3a = ifelse(Pat_global_imp > 75 | Ph_global_imp > 75, 1, 0),
+      D2T_crit3b = ifelse(Pat_global > 50 | Ph_global > 50, 1, 0),
+      
+      # D2T steps. (Seven steps with more restrictive criteria)
+      D2T_step0 = ifelse(D2T_crit1 == 1, 1, 0),
+      D2T_step1 = ifelse(D2T_crit1 == 1 & D2T_crit2 == 1, 1, 0),
+      D2T_step2 = ifelse(D2T_crit1 == 1 & D2T_crit2 == 1 & D2T_crit3 == 1, 1, 0),
+      D2T_step3 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3 == 1, 1, 0),
+      D2T_step4 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),
+      D2T_step5 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 120, 1, 0),
+      D2T_step6 = ifelse(D2T_crit1 == 1 & D2T_crit2a & D2T_crit3a == 1 & FU_2000 <= 60, 1, 0),
+      
+      # Sensitivity analyses
+      D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
+      D2T_RA_sens2 = ifelse(D2T_crit1 == 1 & D2T_crit2sens2 == 1 & D2T_crit3b == 1, 1, 0),
+      D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0),
+      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
+    ) %>%
+    
+    # Ever-D2T variables (per patient)
+    group_by(pat_ID) %>%
+    mutate(across(
+      starts_with("D2T_step"),
+      ~ ifelse(all(is.na(.x)), NA, max(.x, na.rm = TRUE)),
+      .names = "{.col}_Ever"
+    )) %>%
+    ungroup()
+  return(data_node)
+})
+
+
+
+################################################################
+# Baseline Characteristics at different D2T Definitions 
+################################################################
+# ---- Loop across imputed datasets and definitions ----
+baseline_list <- lapply(final_list, function(data_node) {
+  purrr::map_dfr(defs, function(def) {
+    data_sub <- data_node %>%
+      group_by(pat_ID) %>%
+      summarise(
+        definition = def,
+        D2T_status = if (all(is.na(.data[[def]]))) NA else max(.data[[def]], na.rm = TRUE),
+        Sex = first(Sex),
+        RF = if (all(is.na(RF_positivity))) NA else max(RF_positivity, na.rm = TRUE),
+        aCCP = if (all(is.na(anti_CCP))) NA else max(anti_CCP, na.rm = TRUE),
+        Age_diag = first(Age_diagnosis),
+        .groups = "drop"
+      ) %>%
+      filter(D2T_status == 1)
+    # handle empty subsets so downstream means/SDs don't become NaN/NA
+    if (nrow(data_sub) == 0) {
+      return(tibble(
+        Definition   = def,
+        N            = 0,
+        Female_pct   = NA_real_,
+        RF_pos_pct   = NA_real_,
+        aCCP_pos_pct = NA_real_,
+        Age_mean     = NA_real_,
+        Age_sd       = NA_real_
+      ))
+    }
+    
+    tibble(
+      Definition = def,
+      N = nrow(data_sub),
+      Female_pct   = mean(data_sub$Sex == 1, na.rm = TRUE) * 100,
+      RF_pos_pct   = mean(data_sub$RF == 1,  na.rm = TRUE) * 100,
+      aCCP_pos_pct = mean(data_sub$aCCP == 1, na.rm = TRUE) * 100,
+      Age_mean     = mean(data_sub$Age_diag,  na.rm = TRUE),
+      Age_sd       = sd(data_sub$Age_diag,    na.rm = TRUE)
+    )
+  })
+})
+
+# ---- Combine into one dataframe ----
+baseline_all <- bind_rows(baseline_list, .id = "Imputation")
+
+# ---- Pooled summary by Rubin’s Rules (simple averaging) ----
+Table3 <- baseline_all %>%
+  group_by(Definition) %>%
+  summarise(
+    N_mean            = mean(N, na.rm = TRUE),
+    Female_pct_mean   = mean(Female_pct,   na.rm = TRUE),
+    RF_pos_pct_mean   = mean(RF_pos_pct,   na.rm = TRUE),
+    aCCP_pos_pct_mean = mean(aCCP_pos_pct, na.rm = TRUE),
+    Age_mean          = mean(Age_mean,     na.rm = TRUE),
+    Age_sd_pooled     = sqrt(mean(Age_sd^2, na.rm = TRUE)),  # Pooled SD across datasets
+    .groups = "drop"
+  )
+
+# ---- Print nicely ----
+print(Table3)
+
+
+
+################################################################
+# Average Disease AFTER D2T RA 
+################################################################
+# Step 1: Combine the 10 imputed + processed datasets
+pooled_data <- bind_rows(final_list, .id = "imputation_id")
+
+# Definitions (D2T steps)
+defs <- paste0("D2T_step", 0:6)
+
+# Apply to pooled dataset
+Table3b <- purrr::map_dfr(defs, function(def) {
+  
+  # Step 1: Get first D2T event per patient for this definition
+  D2T_times <- pooled_data %>%
+    filter(.data[[paste0(def, "_Ever")]] == 1) %>%
+    group_by(pat_ID) %>%
+    summarise(
+      definition = def,
+      D2T_time = min(Visit_months_from_diagnosis[.data[[def]] == 1], na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Step 2: Join and keep post-D2T visits
+  Table3b <- pooled_data %>%
+    semi_join(D2T_times, by = "pat_ID") %>%
+    mutate(definition = def) %>%
+    left_join(D2T_times, by = c("pat_ID", "definition")) %>%
+    filter(Visit_months_from_diagnosis >= D2T_time)
+  
+  # Step 3: Summarise post-D2T disease activity
+  tibble(
+    Definition = def,
+    DAS28_mean = mean(Table3b$DAS28, na.rm = TRUE),
+    DAS28_sd = sd(Table3b$DAS28, na.rm = TRUE),
+    TJC28_mean = mean(Table3b$TJC28, na.rm = TRUE),
+    TJC28_sd = sd(Table3b$TJC28, na.rm = TRUE),
+    SJC28_mean = mean(Table3b$SJC28, na.rm = TRUE),
+    SJC28_sd = sd(Table3b$SJC28, na.rm = TRUE),
+    ESR_mean = mean(Table3b$ESR, na.rm = TRUE),
+    ESR_sd = sd(Table3b$ESR, na.rm = TRUE),
+    CRP_mean = mean(Table3b$CRP, na.rm = TRUE),
+    CRP_sd = sd(Table3b$CRP, na.rm = TRUE)
+  )
+})
+
+Table3b <- Table3b %>% mutate(
+  DAS28 =  paste0(round(DAS28_mean,2) , " (", round(DAS28_sd, 2), ") "),
+  TJC28 =  paste0(round(TJC28_mean,2) , " (", round(TJC28_sd, 2), ") "),
+  SJC28 =  paste0(round(SJC28_mean,2) , " (", round(SJC28_sd, 2), ") "),
+  ESR =  paste0(round(ESR_mean,2) , " (", round(ESR_sd, 2), ") "),
+  CRP =  paste0(round(CRP_mean,2) , " (", round(CRP_sd, 2), ") ")) %>%
+  select(Definition, DAS28, TJC28, SJC28, ESR, CRP)
+
+print(Table3b)
+
