@@ -1,0 +1,382 @@
+###############################################################################
+#  Prevalence  overall and per gender/age category
+###############################################################################
+# Definitions and labels
+ydefs <- paste0("D2T_step", 0:6)
+defs  <- ydefs  # keep a single name downstream
+
+def_labels <- c(
+  "D2T_step0" = "1. DMARDs ≥2",
+  "D2T_step1" = "2. + DAS28 ≥ 3.2",
+  "D2T_step2" = "3. + VAS >50",
+  "D2T_step3" = "4. Rolling DAS28",
+  "D2T_step4" = "5. VAS >75",
+  "D2T_step5" = "6. ≤10y after 2000",
+  "D2T_step6" = "7. ≤5y after 2000"
+)
+
+# Collect prevalence data across imputations
+prev_all <- lapply(seq_along(final_list), function(i) {
+  data_node <- final_list[[i]]
+  
+  data_node %>%
+    filter(current_year > 2005) %>%
+    select(pat_ID, current_year, all_of(defs)) %>%
+    pivot_longer(cols = all_of(defs), names_to = "Definition", values_to = "D2T") %>%
+    group_by(pat_ID, current_year, Definition) %>%
+    summarise(
+      D2T = ifelse(all(is.na(D2T)), NA, max(D2T, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    group_by(current_year, Definition) %>%
+    summarise(
+      N_total = n(),
+      N_eff   = sum(!is.na(D2T)),                 # non-missing visits contributing
+      p       = mean(D2T, na.rm = TRUE),          # mean prevalence across patients
+      .groups = "drop"
+    ) %>%
+    mutate(
+      p = ifelse(is.nan(p), NA_real_, p),         # guard against NaN when all NA
+      imputation = i
+    )
+}) %>% bind_rows()
+
+# Rubin-style pooling over imputations (per year x definition)
+prevalence_pooled <- prev_all %>%
+  group_by(current_year, Definition) %>%
+  summarise(
+    M     = n(),                                  # number of imputations contributing
+    p_bar = mean(p, na.rm = TRUE),                # pooled prevalence
+    u_bar = mean((p * (1 - p)) / pmax(N_eff, 1),  # within-imputation var (binomial approx)
+                 na.rm = TRUE),
+    b     = var(p, na.rm = TRUE),                 # between-imputation var
+    T_var = u_bar + (1 + 1/M) * b,
+    SE    = sqrt(T_var),
+    LL    = pmax(0, p_bar - 1.96 * SE),
+    UL    = pmin(1, p_bar + 1.96 * SE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Definition = factor(Definition, levels = defs,
+                        labels = unname(def_labels[defs])),
+    Prevalence = p_bar * 100,
+    LL = LL * 100,
+    UL = UL * 100,
+    Label = sprintf("%.2f (%.2f, %.2f)", Prevalence, LL, UL)
+  ) %>%
+  filter(!is.na(Prevalence))                      # drop rows where all imputations were NA
+
+# Plot
+ggplot(prevalence_pooled, aes(x = current_year, y = Prevalence, color = Definition)) +
+  geom_line(linewidth = 1.2, na.rm = TRUE) +
+  labs(
+    title = "Stepwise D2T RA Prevalence Over Calendar Years in the UMCU",
+    x = "Calendar Year",
+    y = "Prevalence per 100 Patients",
+    color = "D2T Definition"
+  ) +
+  scale_x_continuous(
+    limits = c(min(prevalence_pooled$current_year, na.rm = TRUE), 2024),
+    breaks = seq(min(prevalence_pooled$current_year, na.rm = TRUE), 2024, by = 2)
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+
+
+Table4 <- prevalence_pooled %>%
+  select(current_year, Definition, Label) %>%
+  pivot_wider(names_from = Definition, values_from = Label) %>%
+  arrange(current_year)
+
+
+##### Stratified Prevalence 
+# Use first imputed dataset
+data_node <- final_list[[1]]
+
+# Summarise by patient and year
+data_node_prev <- data_node %>%
+  filter(current_year > 2005) %>%
+  group_by(pat_ID, current_year) %>%
+  summarise(
+    D2T_step3 = ifelse(all(is.na(D2T_step3)), NA, max(D2T_step3, na.rm = TRUE)),
+    Sex = first(Sex),  # no aggregation needed if constant per patient
+    RF = ifelse(all(is.na(RF_positivity)), NA, max(RF_positivity, na.rm = TRUE)),
+    anti_CCP = ifelse(all(is.na(anti_CCP)), NA, max(anti_CCP, na.rm = TRUE)),
+    current_age_cat = first(current_age_cat),
+    .groups = "drop"
+  )
+
+# Recode age categories (assuming they are 1 to 6)
+age_cuts <- c(0, 40, 50, 60, 70, 80, Inf)
+age_labels <- c("1" = "< 40", "2" = "40–50","3" = "50–60","4" = "60–70", "5" = "70–80", "6" = "> 80")
+
+# Collect stratified prevalence across imputations
+prev_age_list <- lapply(seq_along(final_list), function(i) {
+  data_node <- final_list[[i]]
+  data_node %>%
+    filter(current_year > 2005) %>%
+    select(pat_ID, current_year, current_age, D2T_step2) %>%
+    mutate(age_group = cut(current_age, breaks = age_cuts, labels = age_labels, right = FALSE)) %>%
+    group_by(pat_ID, current_year, age_group) %>%
+    summarise(D2T = ifelse(all(is.na(D2T_step2)), NA, max(D2T_step2, na.rm = TRUE)), .groups = "drop") %>%
+    group_by(current_year, age_group) %>%
+    summarise(  N = n(),  p = mean(D2T, na.rm = TRUE),  .groups = "drop"
+    ) %>%
+    mutate(imputation = i)
+}) %>%
+  bind_rows()
+
+# Pool prevalence across imputations
+prev_age_pooled <- prev_age_list %>%
+  group_by(current_year, age_group) %>%
+  summarise( M = n(),  p_bar = mean(p),  u_bar = mean(p * (1 - p) / N),
+             b = var(p),   T_var = u_bar + (1 + 1/M) * b,   SE = sqrt(T_var),  LL = pmax(0, p_bar - 1.96 * SE),   
+             UL = pmin(1, p_bar + 1.96 * SE),  .groups = "drop"
+  ) %>%
+  mutate(  Prevalence = round(p_bar * 100, 2),   LL = round(LL * 100, 2),    UL = round(UL * 100, 2),
+           Label = paste0(Prevalence, " (", LL, ", ", UL, ")")
+  )
+p_age <- ggplot(prev_age_pooled, aes(x = current_year, y = Prevalence, color = age_group)) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    title = "Prevalence of Base Definiton of D2T by Age Group Over Time",
+    x = "Calendar Year",
+    y = "Prevalence per 100 Patients",
+    color = "Age Group"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+
+p_age
+
+# Collect stratified prevalence across imputations
+prev_gender_list <- lapply(seq_along(final_list), function(i) {
+  data_node <- final_list[[i]]
+  
+  data_node %>%
+    filter(current_year > 2005) %>%
+    select(pat_ID, current_year, Sex, D2T_step2) %>%
+    group_by(pat_ID, current_year, Sex) %>%
+    summarise(D2T = ifelse(all(is.na(D2T_step2)), NA, max(D2T_step2, na.rm = TRUE)), .groups = "drop") %>%
+    group_by(current_year, Sex) %>%
+    summarise(  N = n(),   p = mean(D2T, na.rm = TRUE),   .groups = "drop"
+    ) %>%
+    mutate(imputation = i)
+}) %>%
+  bind_rows()
+
+# Pool prevalence across imputations
+prev_gender_pooled <- prev_gender_list %>%
+  group_by(current_year, Sex) %>%
+  summarise(
+    M = n(), p_bar = mean(p),  u_bar = mean(p * (1 - p) / N),  b = var(p),  T_var = u_bar + (1 + 1/M) * b,
+    SE = sqrt(T_var), LL = pmax(0, p_bar - 1.96 * SE),    UL = pmin(1, p_bar + 1.96 * SE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Prevalence = round(p_bar * 100, 2),  LL = round(LL * 100, 2),   UL = round(UL * 100, 2),
+    Label = paste0(Prevalence, " (", LL, ", ", UL, ")")
+  )
+
+p_sex <- ggplot(prev_gender_pooled, aes(x = current_year, y = Prevalence, color = factor(Sex))) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(
+    values = c("0" = "#1f77b4", "1" = "#ff7f0e"),  # choose your preferred colors
+    labels = c("0" = "Male", "1" = "Female"),
+    name = "Gender"
+  ) +
+  labs(
+    title = "Prevalence of the base definition of D2T RA by Gender Over Time",
+    x = "Calendar Year",
+    y = "Prevalence per 100 Patients",
+    color = "Gender"
+  ) +
+  scale_x_continuous(
+    limits = c(min(prevalence_pooled$current_year), 2024),
+    breaks = seq(min(prevalence_pooled$current_year), 2024, by = 2)
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+
+p_sex 
+
+
+prev_sero_list <- lapply(seq_along(final_list), function(i) {
+  data_node <- final_list[[i]]
+  
+  data_node %>%
+    filter(current_year > 2005) %>%
+    select(pat_ID, current_year, D2T_step2, RF_positivity, anti_CCP) %>%
+    mutate(
+      RF_aCCP_group = case_when(
+        RF_positivity == 1 & anti_CCP == 1 ~ "Both+",
+        RF_positivity == 1 ~ "All RF+",
+        anti_CCP == 1 ~ "All CCP+",
+        (RF_positivity == 1 & is.na(anti_CCP)) |
+          (anti_CCP == 1 & is.na(RF_positivity)) |
+          (RF_positivity == 1 & anti_CCP == 0) |
+          (RF_positivity == 0 & anti_CCP == 1) ~ "Either+",
+        RF_positivity == 0 & anti_CCP == 0 ~ "Seronegative",
+        is.na(RF_positivity) & is.na(anti_CCP) ~ "Missing info",
+        TRUE ~ "Missing info"
+      )
+    ) %>%
+    group_by(pat_ID, current_year, RF_aCCP_group) %>%
+    summarise(D2T = ifelse(all(is.na(D2T_step2)), NA, max(D2T_step2, na.rm = TRUE)), .groups = "drop") %>%
+    group_by(current_year, RF_aCCP_group) %>%
+    summarise(
+      N = n(),
+      p = mean(D2T, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(imputation = i)
+}) %>%
+  bind_rows()
+
+prev_sero_pooled <- prev_sero_list %>%
+  group_by(current_year, RF_aCCP_group) %>%
+  summarise(
+    M = n(),
+    p_bar = mean(p), 
+    u_bar = mean(p * (1 - p) / N),
+    b = var(p), 
+    T_var = u_bar + (1 + 1/M) * b,
+    SE = sqrt(T_var),
+    LL = pmax(0, p_bar - 1.96 * SE),   
+    UL = pmin(1, p_bar + 1.96 * SE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Prevalence = round(p_bar * 100, 2), 
+    LL = round(LL * 100, 2),  
+    UL = round(UL * 100, 2),
+    Label = paste0(Prevalence, " (", LL, ", ", UL, ")")
+  )
+p_markers <- ggplot(prev_sero_pooled, aes(x = current_year, y = Prevalence, color = RF_aCCP_group)) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    title = "Prevalence of the base definition of D2T RA by RF/aCCP Positivity",
+    x = "Calendar Year",
+    y = "Prevalence per 100 Patients",
+    color = "Autoantibody Status"
+  ) +
+  scale_x_continuous(
+    limits = c(min(prevalence_pooled$current_year), 2024),
+    breaks = seq(min(prevalence_pooled$current_year), 2024, by = 2)
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+
+p_markers 
+
+
+################################################################
+# Cox regression
+################################################################
+# Step 1 : Build survival data across imputations 
+imputed_surv_data <- lapply(final_list, function(data_node) {
+  data_node %>%
+    filter(!is.na(Visit_months_from_diagnosis)) %>%
+    group_by(pat_ID) %>%
+    summarise(
+      time = max(Visit_months_from_diagnosis, na.rm = TRUE) / 12,
+      event = max(D2T_step2, na.rm = TRUE),
+      age_diag = first(Age_diagnosis),
+      gender = as.numeric(first(Sex)),
+      RF = first(RF_positivity),
+      CCP = first(anti_CCP),
+      Year_diagnosis = first(Year_diagnosis),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(time) & !is.na(event)) %>%
+    mutate(
+      RF_CCP_group = case_when(
+        RF == 1 & CCP == 1 ~ "Both Positive",
+        (RF == 1 & CCP != 1) | (CCP == 1 & RF != 1) ~ "Either Positive",
+        RF == 0 & CCP == 0 ~ "Seronegative",
+        TRUE ~ "Missing"
+      ),
+      RF_CCP_group = factor(RF_CCP_group, levels = c("Seronegative", "Either Positive", "Both Positive", "Missing")),
+      
+      year_cat = case_when(
+        Year_diagnosis < 2006 ~ "<2006",
+        Year_diagnosis <= 2010 ~ "2006–2010",
+        Year_diagnosis <= 2015 ~ "2011–2015",
+        Year_diagnosis > 2015 ~ "2016–2024",
+        TRUE ~ NA_character_
+      ),
+      year_cat = factor(year_cat, levels = c("<2006", "2006–2010", "2011–2015", "2016–2024"))
+    )
+})
+
+models <- lapply(imputed_surv_data, function(data) {
+  coxph(Surv(time, event) ~ age_diag + gender + RF_CCP_group + year_cat, data = data)
+})
+# step 3: Pool results using mice:: pool ()
+# Create mira object
+mira_obj <- as.mira(models)
+
+# Pool results
+pooled_results <- pool(mira_obj)
+
+# Tidy and format
+multi_df <- summary(pooled_results, conf.int = TRUE) %>%
+  mutate(
+    Variable = recode(term,
+                      "RF_CCP_groupEither Positive" = "Either vs Seronegative",
+                      "RF_CCP_groupBoth Positive" = "Both vs Seronegative",
+                      "RF_CCP_groupMissing" = "Missing vs Seronegative",
+                      "gender" = "Female gender",
+                      "age_diag" = "Age at Diagnosis",
+                      "year_cat2006–2010" = "2006–2010 vs <2006",
+                      "year_cat2011–2015" = "2011–2015 vs <2006",
+                      "year_cat2016–2024" = "2016–2024 vs <2006"
+    ),
+    Multivariate = paste0(round(estimate, 2), " (", round(`2.5 %`, 2), " – ", round(`97.5 %`, 2), ")")
+  ) %>%
+  select(Variable, Multivariate)
+
+get_univ <- function(var) {
+  models_univ <- lapply(imputed_surv_data, function(data) {
+    f <- as.formula(paste("Surv(time, event) ~", var))
+    coxph(f, data = data)
+  })
+  
+  pooled <- pool(as.mira(models_univ))
+  pooled_summary <- summary(pooled, conf.int = TRUE)
+  
+  # Identify confidence interval columns
+  conf_low_col <- if ("2.5 %" %in% names(pooled_summary)) "2.5 %" else "conf.low"
+  conf_high_col <- if ("97.5 %" %in% names(pooled_summary)) "97.5 %" else "conf.high"
+  
+  pooled_summary %>%
+    mutate(
+      conf.low = .[[conf_low_col]],
+      conf.high = .[[conf_high_col]],
+      Variable = recode(term,
+                        "gender" = "Female gender",
+                        "age_diag" = "Age at Diagnosis",
+                        "RF_CCP_groupEither Positive" = "Either vs Seronegative",
+                        "RF_CCP_groupBoth Positive" = "Both vs Seronegative",
+                        "RF_CCP_groupMissing" = "Missing vs Seronegative",
+                        "year_cat2006–2010" = "2006–2010 vs <2006",
+                        "year_cat2011–2015" = "2011–2015 vs <2006",
+                        "year_cat2016–2024" = "2016–2024 vs <2006"
+      ),
+      Univariate = paste0(
+        round(estimate, 2), " (",
+        round(conf.low, 2), " – ",
+        round(conf.high, 2), ")"
+      )
+    ) %>%
+    select(Variable, Univariate)
+}
+
+
+
+univ_vars <- c("age_diag", "gender", "RF_CCP_group", "year_cat")
+univ_all <- bind_rows(lapply(univ_vars, get_univ))
+
+Table5 <- full_join(univ_all, multi_df, by = "Variable") %>%
+  select(Variable, Univariate, Multivariate)
+View(Table5)
