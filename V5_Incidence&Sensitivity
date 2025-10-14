@@ -294,7 +294,20 @@ Inc_plot
 ################################################################
 # Sensitvity analysis 
 ################################################################
-defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4")
+defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4", "D2T_RA_sens5")
+
+#centralize labels/colors and reuse across both plots & risk table
+def_labels <- c(
+  D2T_step3    = "Base Definition (Rolling Average)",
+  # D2T_RA_sens1 = "No 3rd MOA for DA",   # uncomment if you include sens1
+  D2T_RA_sens2 = "1. No Imputation",
+  D2T_RA_sens3 = " 2. Diagnosed \u2265 2006",
+  D2T_RA_sens4 = " 3. Failed 3 MOAs for Crit1",
+  D2T_RA_sens5 = "4. CDAI for DA"
+)
+
+def_cols <- setNames(scales::hue_pal()(length(def_labels)), names(def_labels))
+
 
 get_filtered_data_node <- function(definition, data_node) {
   if (definition == "D2T_RA_sens3") {
@@ -314,13 +327,14 @@ data_inc_pooled <- map2_dfr(
   })
 
 data_km <- data_inc_pooled %>%
-  filter(status %in% c(0, 1)) %>%
-  mutate(definition = factor(definition, levels = defs_all))
+  dplyr::filter(status %in% c(0, 1),
+                definition %in% names(def_labels)) %>%
+  dplyr::mutate(definition = factor(definition, levels = names(def_labels))) # ensures data matches label/color sets and fix factor order
 
 
 # Split data by imputation
 km_data_split <- group_split(data_km, imputation)
-time_breaks <- seq(0, 216, by = 12)  # up to 12 years
+time_breaks <- seq(0, 216, by = 24)  # up to 12 years every 2 years 
 time_labels <- as.character(time_breaks / 12)
 
 # Fit and extract summaries, converting to data frames
@@ -328,7 +342,6 @@ risk_tables <- map(km_data_split, function(df) {
   fit <- survfit(Surv(time, status) ~ definition, data = df)
   # use same breaks for the risk table summaries
   summary_fit <- summary(fit, times = time_breaks)
-  
   # Convert to data.frame and keep needed components
   tibble(
     time = summary_fit$time,
@@ -337,33 +350,37 @@ risk_tables <- map(km_data_split, function(df) {
     n.event = summary_fit$n.event )})
 
 # Combine and average
+# --- risk_df ---
 risk_df <- bind_rows(risk_tables, .id = "imputation") %>%
   group_by(time, strata) %>%
   summarise(
-    n.risk = round(mean(n.risk, na.rm = TRUE)),
-    n.event = round(mean(n.event, na.rm = TRUE)),
-    .groups = "drop"
+    n.risk  = round(mean(n.risk,  na.rm = TRUE)),
+    n.event = round(mean(n.event, na.rm = TRUE)), .groups = "drop"
   ) %>%
   mutate(
-    Definition = sub("definition=", "", strata),
-    time_years = time / 12)
+    Definition_id = sub("definition=", "", strata),
+    time_years    = factor(time / 12)) %>%
+  filter(Definition_id %in% names(def_labels)) %>%
+  mutate(
+    RowOrder = fct_rev(factor(Definition_id, levels = names(def_labels))))
 
-risk_table_plot <- risk_df %>%
-  mutate(time_years = as.factor(time_years)) %>%
-  ggplot(aes(x = time_years, y = Definition)) +
-  geom_text(aes(label = paste0(n.risk, " / ", n.event)), size = 3.5) +
-  labs(x = "Years", y = NULL, title = "At Risk / Events") +
+
+# --- risk_table_plot ---
+risk_table_plot <- ggplot(risk_df, aes(x = time_years, y = RowOrder, color = Definition_id)) +
+  geom_text(aes(label = paste0(n.risk, " / ", n.event)), size = 3.5, show.legend = FALSE) +
+  scale_color_manual(values = def_cols, guide = "none") +
+  labs(x = "Years", y = NULL, title = "At Risk / Events (every 2 years)") +
   theme_minimal(base_size = 12) +
   theme(
-    axis.text.x = element_text(angle = 0, hjust = 0.5),
-    axis.text.y = element_text(hjust = 1),
-    panel.grid = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    axis.title.x = element_text(margin = margin(t = 5)),
-    axis.ticks = element_blank())
+    axis.text.y  = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid   = element_blank(),
+    plot.title   = element_text(hjust = 0.5),
+    axis.ticks   = element_blank()
+  )
+
 
 # Fit survival models
-
 km_models <- map(km_data_split, ~ survfit(Surv(time, status) ~ definition, data = .x))
 
 km_df_list <- map2(km_models, km_data_split, function(fit, data) {
@@ -418,20 +435,9 @@ km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
     color = "Definition"
   ) +
   scale_color_manual(
-    values = c(
-      "D2T_step3" = "#984ea3",
-      "D2T_RA_sens1" = "#e41a1c",
-      "D2T_RA_sens2" = "#4daf4a",
-      "D2T_RA_sens3" = "#377eb8",
-      "D2T_RA_sens4" = "#ff7f00"
-    ),
-    labels = c(
-      "D2T_step3"   = "Base Definition (Rolling Average)",
-      "D2T_RA_sens1" = "Sens. 1: No 3rd MOA for DA",
-      "D2T_RA_sens2" = "Sens. 2: No Imputation",
-      "D2T_RA_sens3" = "Sens. 3: Diagnosed ≥ 2006",
-      "D2T_RA_sens4" = "Sens. 4: Crit1 = ≥3 MOAs" 
-    )
+    values = def_cols,
+    labels = def_labels,
+    breaks = names(def_labels)
   ) +
   guides(fill = "none") +
   theme_ggsurvfit_default() +
