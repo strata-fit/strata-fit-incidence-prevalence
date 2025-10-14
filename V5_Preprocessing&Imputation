@@ -250,6 +250,7 @@ imputed_list <- lapply(1:10, function(i) {
            Ph_global_imp = "Ph_global" )
   df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
     0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp                           # adjusted formula for DAS28 from CRP to ESR, to allign with the codebook 
+  df$CDAI <- df$TJC28_imp + df$SJC28_imp + (df$Pat_global_imp / 10) + (df$Ph_global_imp / 10)   # Calcualtion of the CDAI
   return(df)})
 
 names(imputed_list) <- paste0("df_imputed", 1:10)
