@@ -35,9 +35,9 @@ data_node <- data_node %>%
     TRUE           ~ 0
   ))
 
-
-data_node <- data_node %>%
-  filter(!is.na(Visit_months_from_diagnosis))
+#Convert CRP from mg/L to mg/dL if needed 
+#data_node <- data_node %>%
+#  mutate(CRP = CRP / 10)  # 1 mg/dL = 10 mg/L
 
 # Summary per patient
 patient_summary <- data_node %>%
@@ -57,16 +57,66 @@ patient_summary <- data_node %>%
     ESR_mean = mean(ESR, na.rm = TRUE),
     CRP_mean = mean(CRP, na.rm = TRUE),
     VAS_patient_mean = mean(Pat_global, na.rm = TRUE),
-    VAS_physician_mean = mean(Ph_global, na.rm = TRUE)
+    VAS_physician_mean = mean(Ph_global, na.rm = TRUE),
+    # GC variables
+    GC_pct = mean(GC == 1, na.rm = TRUE) * 100,
+    GC_highdose_pct = mean(GC_dose >= 7.5, na.rm = TRUE) * 100,
+    # Previous DMARDs
+    N_prev_csDMARD = first(N_prev_csDMARD),
+    N_prev_bDMARD = first(N_prev_bDMARD),
+    N_prev_tsDMARD = first(N_prev_tsDMARD)
   ) %>%
   mutate(
     visits_per_year = ifelse(is.na(FU_years) | FU_years == 0, NA, n_visits / FU_years)
   )
 
-# Build summary table.                                                  # ADDITION OF CUM_GC USE 
-Table1 <- list("Female, n (%)" = {
-  tab <- table(patient_summary$Female)
-  paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
+# --- Baseline features & "followed from diagnosis (0–6 months)" ---
+dx_window_months <- 6
+
+baseline <- data_node %>%
+  filter(!is.na(Visit_months_from_diagnosis)) %>%
+  arrange(pat_ID, Visit_months_from_diagnosis) %>%
+  group_by(pat_ID) %>%
+  summarise(
+    first_visit_months = first(Visit_months_from_diagnosis),
+    Disease_duration_first_mo = first(Visit_months_from_diagnosis),   # months from dx to 1st visit
+    DAS28_first = if (all(is.na(DAS28))) NA_real_ else first(na.omit(DAS28)),
+    Symptom_duration_first_mo = {  # Symptom duration column best-effort (only if you have one)
+      cols <- names(pick(everything()))
+      val <- if ("Symptom_duration_first_mo" %in% cols) {
+        Symptom_duration_first_mo} else if ("Symptom_duration_months" %in% cols) {
+        Symptom_duration_months} else if ("Symptom_duration_years" %in% cols) {
+        Symptom_duration_years * 12} else {
+        NA_real_}
+      if (all(is.na(val))) NA_real_ else first(na.omit(val))
+    },
+    N_prev_csDMARD = first(N_prev_csDMARD),
+    N_prev_bDMARD  = first(N_prev_bDMARD),
+    N_prev_tsDMARD = first(N_prev_tsDMARD),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Followed_from_dx = !is.na(first_visit_months) &
+      first_visit_months >= 0 &
+      first_visit_months <= dx_window_months
+  )
+
+# Percentages Yes/No
+follow_yes <- sum(baseline$Followed_from_dx %in% TRUE)
+follow_no  <- sum(baseline$Followed_from_dx %in% FALSE)
+follow_den <- follow_yes + follow_no
+pct_yes <- if (follow_den > 0) round(follow_yes / follow_den * 100, 1) else NA_real_
+pct_no  <- if (follow_den > 0) round(follow_no  / follow_den * 100, 1) else NA_real_
+
+# Subgroups
+yes_grp <- baseline %>% dplyr::filter(Followed_from_dx)
+no_grp  <- baseline %>% dplyr::filter(!Followed_from_dx)
+
+# --- Build summary table --- Addition of Medication and distiction of follow-up groups
+Table1 <- list(
+  "Female, n (%)" = {
+    tab <- table(patient_summary$Female)
+    paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
   "RF-positive, n (%)" = {
     tab <- table(patient_summary$RF_positive)
     paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
@@ -77,10 +127,9 @@ Table1 <- list("Female, n (%)" = {
     m <- mean(patient_summary$Age_diagnosis, na.rm = TRUE)
     s <- sd(patient_summary$Age_diagnosis, na.rm = TRUE)
     paste0(round(m, 1), " (", round(s, 1), ")")},
-  "Initial calendar year of follow-up" = {
-    m <- mean(patient_summary$Year_diagnosis, na.rm = TRUE)
-    s <- sd(patient_summary$Year_diagnosis, na.rm = TRUE)
-    paste0(round(m, 1), " (", round(s, 1), ")")},
+  "Initial calendar year of follow-up, median (Q1, Q3)" = {
+    q <- quantile(patient_summary$Year_diagnosis, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    paste0(round(q[2], 0), " (", round(q[1], 0), "–", round(q[3], 0), ")")},
   "Follow-up (years)" = {
     q <- quantile(patient_summary$FU_years, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
     paste0(round(q[2], 1), " (", round(q[1], 1), "–", round(q[3], 1), ")")},
@@ -113,13 +162,81 @@ Table1 <- list("Female, n (%)" = {
   "VAS physician" = {
     m <- mean(patient_summary$VAS_physician_mean, na.rm = TRUE)
     s <- sd(patient_summary$VAS_physician_mean, na.rm = TRUE)
-    paste0(round(m, 1), " (", round(s, 1), ")")  })
+    paste0(round(m, 1), " (", round(s, 1), ")")  },
+  "GC use, % of visits" = {
+    m <- mean(patient_summary$GC_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")},
+  "GC ≥7.5mg, % of visits" = {
+    m <- mean(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")},
+  "Previous csDMARDs, mean (SD)" = {
+    m <- mean(patient_summary$N_prev_csDMARD, na.rm = TRUE)
+    s <- sd(patient_summary$N_prev_csDMARD, na.rm = TRUE)
+    paste0(round(m,1), " (", round(s,1), ")")},
+  "Previous bDMARDs, mean (SD)" = {
+    m <- mean(patient_summary$N_prev_bDMARD, na.rm = TRUE)
+    s <- sd(patient_summary$N_prev_bDMARD, na.rm = TRUE)
+    paste0(round(m,1), " (", round(s,1), ")")},
+  "Previous tsDMARDs, mean (SD)" = {
+    m <- mean(patient_summary$N_prev_tsDMARD, na.rm = TRUE)
+    s <- sd(patient_summary$N_prev_tsDMARD, na.rm = TRUE)
+    paste0(round(m,1), " (", round(s,1), ")")}
+)
+
+# --- Append dynamic-name rows safely ---
+nm_yes <- sprintf("Followed from diagnosis (0-%d months), n (%%) - Yes", dx_window_months)
+nm_no  <- sprintf("Followed from diagnosis (0-%d months), n (%%) - No",  dx_window_months)
+
+Table1[[nm_yes]] <- if (!is.na(pct_yes)) sprintf("%d (%.1f%%)", follow_yes, pct_yes) else "NA"
+Table1[[nm_no ]] <- if (!is.na(pct_no )) sprintf("%d (%.1f%%)", follow_no,  pct_no ) else "NA"
+
+Table1[["Symptom duration at diagnosis (months), median (Q1, Q3) [Since Diagnosis]"]] <- {
+  if (nrow(yes_grp) == 0) "NA" else {
+    q <- quantile(yes_grp$Symptom_duration_first_mo, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    sprintf("%.1f (%.1f-%.1f)", q[2], q[1], q[3])
+  }
+}
+Table1[["DAS28 at first visit, mean (SD) [Since Diagnosis]"]] <- {
+  if (nrow(yes_grp) == 0) "NA" else {
+    m <- mean(yes_grp$DAS28_first, na.rm = TRUE); s <- sd(yes_grp$DAS28_first, na.rm = TRUE)
+    sprintf("%.2f (%.2f)", m, s)
+  }
+}
+Table1[["Disease duration at 1st visit (months), median (Q1, Q3) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    q <- quantile(no_grp$Disease_duration_first_mo, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    sprintf("%.1f (%.1f-%.1f)", q[2], q[1], q[3])
+  }
+}
+Table1[["Previous csDMARDs, mean (SD) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    m <- mean(no_grp$N_prev_csDMARD, na.rm = TRUE); s <- sd(no_grp$N_prev_csDMARD, na.rm = TRUE)
+    sprintf("%.1f (%.1f)", m, s)
+  }
+}
+Table1[["Previous bDMARDs, mean (SD) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    m <- mean(no_grp$N_prev_bDMARD, na.rm = TRUE); s <- sd(no_grp$N_prev_bDMARD, na.rm = TRUE)
+    sprintf("%.1f (%.1f)", m, s)
+  }
+}
+Table1[["Previous tsDMARDs, mean (SD) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    m <- mean(no_grp$N_prev_tsDMARD, na.rm = TRUE); s <- sd(no_grp$N_prev_tsDMARD, na.rm = TRUE)
+    sprintf("%.1f (%.1f)", m, s)
+  }
+}
 
 # Convert to data frame
 summary_table1 <- data.frame(Variable = names(Table1), Value = unlist(Table1), row.names = NULL)
 print(summary_table1)
 
+# Reorder data_node
 data_node <- data_node[order(data_node$pat_ID, data_node$Visit_months_from_diagnosis),]
+
+# Cleanup and patient count
 rm(patient_summary, summary_table1)
 n_distinct(data_node$pat_ID)
 
@@ -304,7 +421,7 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_crit2b = ifelse((DAS28 > 3.2 | CRP_imp > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
       D2T_crit2sens1 = ifelse(DAS28_imp > 3.2 | CRP_imp > 1.0 , 1, 0),
       D2T_crit2sens2 = ifelse(DAS28 > 3.2 | CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
-      D2T_crit2sens5 = ifelse((CDAI > 21 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2sens5 = ifelse((CDAI > 10 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
       
     
       # Criterion 3
@@ -325,7 +442,7 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_RA_sens2 = ifelse(D2T_crit1 == 1 & D2T_crit2sens2 == 1 & D2T_crit3b == 1, 1, 0),
       D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0),
-      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
+      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis -- Removed later
       D2T_RA_sens5 = ifelse(D2T_crit1 == 1 & D2T_crit2sens5 == 1 & D2T_crit3 == 1, 1, 0),   # CDAI Instead of DAS
     ) %>%
     
