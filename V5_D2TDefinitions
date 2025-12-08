@@ -1,6 +1,20 @@
 ###############################################################################
 #  D2T Criteria 
 ###############################################################################
+
+#Criterion 1 (treatment failure definition): 
+#     - Requires patients to have >2 btsDMARDs, or exactly 2 with ≥6 months follow-up. The purpose is to demonstrate that the second treatment has failed.
+#     - This ensures a minimum exposure/number of drugs before further classification.
+
+#Criterion 2 (change of mechanism of action / MOA definition):
+#     - Applied only after Criterion 1 is satisfied.
+#     - Checks whether there is a change in MOA (e.g., from 3rd to 4th drug). 'changed_MOA' is a binary indicator: it records whether a change occurs at that visit, not how many total changes happened.
+#     - No need to re-impose the “≥2 btsDMARD” rule here, since it is already guaranteed by Criterion 1.
+#     - If disease activity data are missing, a change in MOA serves as a proxy for increased disease activity.
+
+#Sensitivity with CDAI replacing the DAS28 disease activity index (sens5)
+
+
 # Apply D2T logic to all 10 datasets
 final_list <- lapply(processed_list, function(data_node) {
   data_node <- data_node %>%
@@ -11,13 +25,15 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_crit1b = ifelse(((cum_csDMARD > 0 & cum_btsDMARD > 2) | (cum_csDMARD > 0 & cum_btsDMARD == 2 & delta_DMARD_time >= 6)) & FU_2000 < 120, 1, 0),
       
       
-      # Criterion 2.  # Added Elevated CRP as a description of high disease activity 
+      # Criterion 2.  # Added Elevated CRP as a description of high disease activity     ## ADDITION OF CALCULATED CDAI 
       D2T_crit2 = ifelse((DAS28_imp > 3.2 | CRP_imp > 1.0 |  (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
-      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1) ) , 1, 0),
       D2T_crit2b = ifelse((DAS28 > 3.2 | CRP_imp > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
       D2T_crit2sens1 = ifelse(DAS28_imp > 3.2 | CRP_imp > 1.0 , 1, 0),
       D2T_crit2sens2 = ifelse(DAS28 > 3.2 | CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
+      D2T_crit2sens5 = ifelse((CDAI > 21 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
       
+    
       # Criterion 3
       D2T_crit3 = ifelse(Pat_global_imp > 50 | Ph_global_imp > 50, 1, 0),
       D2T_crit3a = ifelse(Pat_global_imp > 75 | Ph_global_imp > 75, 1, 0),
@@ -36,7 +52,8 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_RA_sens2 = ifelse(D2T_crit1 == 1 & D2T_crit2sens2 == 1 & D2T_crit3b == 1, 1, 0),
       D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0),
-      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3 == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
+      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
+      D2T_RA_sens5 = ifelse(D2T_crit1 == 1 & D2T_crit2sens5 == 1 & D2T_crit3 == 1, 1, 0),   # CDAI Instead of DAS
     ) %>%
     
     # Ever-D2T variables (per patient)
@@ -49,7 +66,6 @@ final_list <- lapply(processed_list, function(data_node) {
     ungroup()
   return(data_node)
 })
-
 
 
 ################################################################

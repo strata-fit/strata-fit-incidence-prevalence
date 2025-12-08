@@ -1,6 +1,6 @@
 ###############################################################################
 # Incidence and Prevalence of D2T RA 
-# VERSION 3.0
+# VERSION 6.0
 # P.M.J. Welsing & C. Ripepi Jul 2025
 ###############################################################################
 rm(list = ls())
@@ -28,7 +28,6 @@ library(patchwork)
 ###############################################################################
 data_node<- read_csv("STRATA-FIT20250925.csv") # Upload your own data 
 
-
 data_node <- data_node %>%
   mutate(tsDMARD = case_when(
     is.na(tsDMARD) ~ NA_real_,
@@ -36,9 +35,9 @@ data_node <- data_node %>%
     TRUE           ~ 0
   ))
 
-
-data_node <- data_node %>%
-  filter(!is.na(Visit_months_from_diagnosis))
+#Convert CRP from mg/L to mg/dL if needed 
+#data_node <- data_node %>%
+#  mutate(CRP = CRP / 10)  # 1 mg/dL = 10 mg/L
 
 # Summary per patient
 patient_summary <- data_node %>%
@@ -58,16 +57,66 @@ patient_summary <- data_node %>%
     ESR_mean = mean(ESR, na.rm = TRUE),
     CRP_mean = mean(CRP, na.rm = TRUE),
     VAS_patient_mean = mean(Pat_global, na.rm = TRUE),
-    VAS_physician_mean = mean(Ph_global, na.rm = TRUE)
+    VAS_physician_mean = mean(Ph_global, na.rm = TRUE),
+    # GC variables
+    GC_pct = mean(GC == 1, na.rm = TRUE) * 100,
+    GC_highdose_pct = mean(GC_dose >= 7.5, na.rm = TRUE) * 100,
+    # Previous DMARDs
+    N_prev_csDMARD = first(N_prev_csDMARD),
+    N_prev_bDMARD = first(N_prev_bDMARD),
+    N_prev_tsDMARD = first(N_prev_tsDMARD)
   ) %>%
   mutate(
     visits_per_year = ifelse(is.na(FU_years) | FU_years == 0, NA, n_visits / FU_years)
   )
 
-# Build summary table.                                                  # ADDITION OF CUM_GC USE 
-Table1 <- list("Female, n (%)" = {
-  tab <- table(patient_summary$Female)
-  paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
+# --- Baseline features & "followed from diagnosis (0–6 months)" ---
+dx_window_months <- 6
+
+baseline <- data_node %>%
+  filter(!is.na(Visit_months_from_diagnosis)) %>%
+  arrange(pat_ID, Visit_months_from_diagnosis) %>%
+  group_by(pat_ID) %>%
+  summarise(
+    first_visit_months = first(Visit_months_from_diagnosis),
+    Disease_duration_first_mo = first(Visit_months_from_diagnosis),   # months from dx to 1st visit
+    DAS28_first = if (all(is.na(DAS28))) NA_real_ else first(na.omit(DAS28)),
+    Symptom_duration_first_mo = {  # Symptom duration column best-effort (only if you have one)
+      cols <- names(pick(everything()))
+      val <- if ("Symptom_duration_first_mo" %in% cols) {
+        Symptom_duration_first_mo} else if ("Symptom_duration_months" %in% cols) {
+        Symptom_duration_months} else if ("Symptom_duration_years" %in% cols) {
+        Symptom_duration_years * 12} else {
+        NA_real_}
+      if (all(is.na(val))) NA_real_ else first(na.omit(val))
+    },
+    N_prev_csDMARD = first(N_prev_csDMARD),
+    N_prev_bDMARD  = first(N_prev_bDMARD),
+    N_prev_tsDMARD = first(N_prev_tsDMARD),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Followed_from_dx = !is.na(first_visit_months) &
+      first_visit_months >= 0 &
+      first_visit_months <= dx_window_months
+  )
+
+# Percentages Yes/No
+follow_yes <- sum(baseline$Followed_from_dx %in% TRUE)
+follow_no  <- sum(baseline$Followed_from_dx %in% FALSE)
+follow_den <- follow_yes + follow_no
+pct_yes <- if (follow_den > 0) round(follow_yes / follow_den * 100, 1) else NA_real_
+pct_no  <- if (follow_den > 0) round(follow_no  / follow_den * 100, 1) else NA_real_
+
+# Subgroups
+yes_grp <- baseline %>% dplyr::filter(Followed_from_dx)
+no_grp  <- baseline %>% dplyr::filter(!Followed_from_dx)
+
+# --- Build summary table --- Addition of Medication and distiction of follow-up groups
+Table1 <- list(
+  "Female, n (%)" = {
+    tab <- table(patient_summary$Female)
+    paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
   "RF-positive, n (%)" = {
     tab <- table(patient_summary$RF_positive)
     paste0(tab[2], " (", round(tab[2] / sum(tab) * 100, 1), "%)") },
@@ -78,10 +127,9 @@ Table1 <- list("Female, n (%)" = {
     m <- mean(patient_summary$Age_diagnosis, na.rm = TRUE)
     s <- sd(patient_summary$Age_diagnosis, na.rm = TRUE)
     paste0(round(m, 1), " (", round(s, 1), ")")},
-  "Initial calendar year of follow-up" = {
-    m <- mean(patient_summary$Year_diagnosis, na.rm = TRUE)
-    s <- sd(patient_summary$Year_diagnosis, na.rm = TRUE)
-    paste0(round(m, 1), " (", round(s, 1), ")")},
+  "Initial calendar year of follow-up, median (Q1, Q3)" = {
+    q <- quantile(patient_summary$Year_diagnosis, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    paste0(round(q[2], 0), " (", round(q[1], 0), "–", round(q[3], 0), ")")},
   "Follow-up (years)" = {
     q <- quantile(patient_summary$FU_years, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
     paste0(round(q[2], 1), " (", round(q[1], 1), "–", round(q[3], 1), ")")},
@@ -114,13 +162,81 @@ Table1 <- list("Female, n (%)" = {
   "VAS physician" = {
     m <- mean(patient_summary$VAS_physician_mean, na.rm = TRUE)
     s <- sd(patient_summary$VAS_physician_mean, na.rm = TRUE)
-    paste0(round(m, 1), " (", round(s, 1), ")")  })
+    paste0(round(m, 1), " (", round(s, 1), ")")  },
+  "GC use, % of visits" = {
+    m <- mean(patient_summary$GC_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")},
+  "GC ≥7.5mg, % of visits" = {
+    m <- mean(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    s <- sd(patient_summary$GC_highdose_pct, na.rm = TRUE)
+    paste0(round(m, 1), "% (", round(s, 1), "%)")},
+  "Previous csDMARDs, mean (SD)" = {
+    m <- mean(patient_summary$N_prev_csDMARD, na.rm = TRUE)
+    s <- sd(patient_summary$N_prev_csDMARD, na.rm = TRUE)
+    paste0(round(m,1), " (", round(s,1), ")")},
+  "Previous bDMARDs, mean (SD)" = {
+    m <- mean(patient_summary$N_prev_bDMARD, na.rm = TRUE)
+    s <- sd(patient_summary$N_prev_bDMARD, na.rm = TRUE)
+    paste0(round(m,1), " (", round(s,1), ")")},
+  "Previous tsDMARDs, mean (SD)" = {
+    m <- mean(patient_summary$N_prev_tsDMARD, na.rm = TRUE)
+    s <- sd(patient_summary$N_prev_tsDMARD, na.rm = TRUE)
+    paste0(round(m,1), " (", round(s,1), ")")}
+)
+
+# --- Append dynamic-name rows safely ---
+nm_yes <- sprintf("Followed from diagnosis (0-%d months), n (%%) - Yes", dx_window_months)
+nm_no  <- sprintf("Followed from diagnosis (0-%d months), n (%%) - No",  dx_window_months)
+
+Table1[[nm_yes]] <- if (!is.na(pct_yes)) sprintf("%d (%.1f%%)", follow_yes, pct_yes) else "NA"
+Table1[[nm_no ]] <- if (!is.na(pct_no )) sprintf("%d (%.1f%%)", follow_no,  pct_no ) else "NA"
+
+Table1[["Symptom duration at diagnosis (months), median (Q1, Q3) [Since Diagnosis]"]] <- {
+  if (nrow(yes_grp) == 0) "NA" else {
+    q <- quantile(yes_grp$Symptom_duration_first_mo, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    sprintf("%.1f (%.1f-%.1f)", q[2], q[1], q[3])
+  }
+}
+Table1[["DAS28 at first visit, mean (SD) [Since Diagnosis]"]] <- {
+  if (nrow(yes_grp) == 0) "NA" else {
+    m <- mean(yes_grp$DAS28_first, na.rm = TRUE); s <- sd(yes_grp$DAS28_first, na.rm = TRUE)
+    sprintf("%.2f (%.2f)", m, s)
+  }
+}
+Table1[["Disease duration at 1st visit (months), median (Q1, Q3) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    q <- quantile(no_grp$Disease_duration_first_mo, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+    sprintf("%.1f (%.1f-%.1f)", q[2], q[1], q[3])
+  }
+}
+Table1[["Previous csDMARDs, mean (SD) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    m <- mean(no_grp$N_prev_csDMARD, na.rm = TRUE); s <- sd(no_grp$N_prev_csDMARD, na.rm = TRUE)
+    sprintf("%.1f (%.1f)", m, s)
+  }
+}
+Table1[["Previous bDMARDs, mean (SD) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    m <- mean(no_grp$N_prev_bDMARD, na.rm = TRUE); s <- sd(no_grp$N_prev_bDMARD, na.rm = TRUE)
+    sprintf("%.1f (%.1f)", m, s)
+  }
+}
+Table1[["Previous tsDMARDs, mean (SD) [Intake]"]] <- {
+  if (nrow(no_grp) == 0) "NA" else {
+    m <- mean(no_grp$N_prev_tsDMARD, na.rm = TRUE); s <- sd(no_grp$N_prev_tsDMARD, na.rm = TRUE)
+    sprintf("%.1f (%.1f)", m, s)
+  }
+}
 
 # Convert to data frame
 summary_table1 <- data.frame(Variable = names(Table1), Value = unlist(Table1), row.names = NULL)
 print(summary_table1)
 
+# Reorder data_node
 data_node <- data_node[order(data_node$pat_ID, data_node$Visit_months_from_diagnosis),]
+
+# Cleanup and patient count
 rm(patient_summary, summary_table1)
 n_distinct(data_node$pat_ID)
 
@@ -234,6 +350,7 @@ imputed_list <- lapply(1:10, function(i) {
            Ph_global_imp = "Ph_global" )
   df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
     0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp 
+  df$CDAI <- df$TJC28_imp + df$SJC28_imp + (df$Pat_global_imp / 10) + (df$Ph_global_imp / 10)   # Calcualtion of the CDAI
   return(df)})
 
 names(imputed_list) <- paste0("df_imputed", 1:10)
@@ -257,6 +374,8 @@ processed_list <- lapply(1:10, function(i) {
     ) %>%
     ungroup()
   
+
+  
   # Compute follow-up from year 2000
   data_node$FU_2000 <- ifelse(
     data_node$Year_diagnosis >= 2000,
@@ -272,6 +391,20 @@ names(processed_list) <- paste0("data_node", 1:10)
 ###############################################################################
 #  D2T Criteria 
 ###############################################################################
+
+#Criterion 1 (treatment failure definition): 
+#     - Requires patients to have >2 btsDMARDs, or exactly 2 with ≥6 months follow-up. The purpose is to demonstrate that the second treatment has failed.
+#     - This ensures a minimum exposure/number of drugs before further classification.
+
+#Criterion 2 (change of mechanism of action / MOA definition):
+#     - Applied only after Criterion 1 is satisfied.
+#     - Checks whether there is a change in MOA (e.g., from 3rd to 4th drug). 'changed_MOA' is a binary indicator: it records whether a change occurs at that visit, not how many total changes happened.
+#     - No need to re-impose the “≥2 btsDMARD” rule here, since it is already guaranteed by Criterion 1.
+#     - If disease activity data are missing, a change in MOA serves as a proxy for increased disease activity.
+
+#Sensitivity with CDAI replacing the DAS28 disease activity index (sens5)
+
+
 # Apply D2T logic to all 10 datasets
 final_list <- lapply(processed_list, function(data_node) {
   data_node <- data_node %>%
@@ -282,13 +415,15 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_crit1b = ifelse(((cum_csDMARD > 0 & cum_btsDMARD > 2) | (cum_csDMARD > 0 & cum_btsDMARD == 2 & delta_DMARD_time >= 6)) & FU_2000 < 120, 1, 0),
       
       
-      # Criterion 2.  # Added Elevated CRP as a description of high disease activity 
+      # Criterion 2.  # Added Elevated CRP as a description of high disease activity     ## ADDITION OF CALCULATED CDAI 
       D2T_crit2 = ifelse((DAS28_imp > 3.2 | CRP_imp > 1.0 |  (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
-      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
+      D2T_crit2a = ifelse((rol_av_DAS28 > 3.2 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1) ) , 1, 0),
       D2T_crit2b = ifelse((DAS28 > 3.2 | CRP_imp > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
       D2T_crit2sens1 = ifelse(DAS28_imp > 3.2 | CRP_imp > 1.0 , 1, 0),
       D2T_crit2sens2 = ifelse(DAS28 > 3.2 | CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1), 1, 0),
+      D2T_crit2sens5 = ifelse((CDAI > 10 | rol_av_CRP > 1.0 | (changed_MOA == 1 & cum_btsDMARD > 1)) , 1, 0),
       
+    
       # Criterion 3
       D2T_crit3 = ifelse(Pat_global_imp > 50 | Ph_global_imp > 50, 1, 0),
       D2T_crit3a = ifelse(Pat_global_imp > 75 | Ph_global_imp > 75, 1, 0),
@@ -307,7 +442,8 @@ final_list <- lapply(processed_list, function(data_node) {
       D2T_RA_sens1 = ifelse(D2T_crit1 == 1 & D2T_crit2sens1 == 1 & D2T_crit3 == 1, 1, 0),
       D2T_RA_sens2 = ifelse(D2T_crit1 == 1 & D2T_crit2sens2 == 1 & D2T_crit3b == 1, 1, 0),
       D2T_RA_sens3 = ifelse(D2T_crit1 == 1 & D2T_crit2a  & D2T_crit3 == 1, 1, 0),
-      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis 
+      D2T_RA_sens4 = ifelse(D2T_crit1a == 1 & D2T_crit2a & D2T_crit3a == 1, 1, 0),   # 3rd MOA as a sensitivity analysis -- Removed later
+      D2T_RA_sens5 = ifelse(D2T_crit1 == 1 & D2T_crit2sens5 == 1 & D2T_crit3 == 1, 1, 0),   # CDAI Instead of DAS
     ) %>%
     
     # Ever-D2T variables (per patient)
@@ -460,7 +596,6 @@ Table2_pooled_results  <- incidence_all %>%
 
 
 
-
 ### Plot the Incidence Curve 
 
 # ---- Step 1: Define incidence extraction function ----
@@ -554,8 +689,6 @@ get_surv_df <- function(data_node, def) {
   )
 }
 
-# Replace final_list with your actual list of imputed datasets (with D2T applied)
-
 
 all_surv_data <- map2_dfr(
   final_list,
@@ -610,7 +743,7 @@ Inc_plot <- ggplot(pooled_curve, aes(x = time_rounded / 12, y = mean_inc, color 
   ) +
   scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) + 
   coord_cartesian(xlim = c(0, 15)) +  # Limit at 15 years of follow-up
-  scale_y_continuous(limits = c(0, 0.40), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 0.30), expand = c(0, 0)) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "right")
 
@@ -674,8 +807,6 @@ Table3 <- baseline_all %>%
     Age_sd_pooled     = sqrt(mean(Age_sd^2, na.rm = TRUE)),  # Pooled SD across datasets
     .groups = "drop"
   )
-
-# ---- Print nicely ----
 print(Table3)
 
 
@@ -738,7 +869,7 @@ print(Table3b)
 
 
 ################################################################
-# Persistance
+# Persistence
 ################################################################
 
 # ---- Step 0: Filter cohort (Year_diagnosis >= 2006) ----
@@ -866,10 +997,24 @@ p_persist <- ggplot(df_persist, aes(definition, as.numeric(str_extract(value, "^
   theme_minimal()
 
 p_persist 
+
 ################################################################
 # Sensitvity analysis 
 ################################################################
-defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4")
+defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4", "D2T_RA_sens5")
+
+#centralize labels/colors and reuse across both plots & risk table
+def_labels <- c(
+  D2T_step3    = "Base Definition (Rolling Average)",
+  # D2T_RA_sens1 = "No 3rd MOA for DA",   # uncomment if you include sens1
+  D2T_RA_sens2 = "1. No Imputation",
+  D2T_RA_sens3 = " 2. Diagnosed \u2265 2006",
+  D2T_RA_sens4 = " 3. Failed 3 MOAs for Crit1",
+  D2T_RA_sens5 = "4. CDAI for DA"
+)
+
+def_cols <- setNames(scales::hue_pal()(length(def_labels)), names(def_labels))
+
 
 get_filtered_data_node <- function(definition, data_node) {
   if (definition == "D2T_RA_sens3") {
@@ -889,13 +1034,14 @@ data_inc_pooled <- map2_dfr(
   })
 
 data_km <- data_inc_pooled %>%
-  filter(status %in% c(0, 1)) %>%
-  mutate(definition = factor(definition, levels = defs_all))
+  dplyr::filter(status %in% c(0, 1),
+                definition %in% names(def_labels)) %>%
+  dplyr::mutate(definition = factor(definition, levels = names(def_labels))) # ensures data matches label/color sets and fix factor order
 
 
 # Split data by imputation
 km_data_split <- group_split(data_km, imputation)
-time_breaks <- seq(0, 216, by = 12)  # up to 12 years
+time_breaks <- seq(0, 216, by = 24)  # up to 12 years every 2 years 
 time_labels <- as.character(time_breaks / 12)
 
 # Fit and extract summaries, converting to data frames
@@ -903,7 +1049,6 @@ risk_tables <- map(km_data_split, function(df) {
   fit <- survfit(Surv(time, status) ~ definition, data = df)
   # use same breaks for the risk table summaries
   summary_fit <- summary(fit, times = time_breaks)
-  
   # Convert to data.frame and keep needed components
   tibble(
     time = summary_fit$time,
@@ -912,33 +1057,37 @@ risk_tables <- map(km_data_split, function(df) {
     n.event = summary_fit$n.event )})
 
 # Combine and average
+# --- risk_df ---
 risk_df <- bind_rows(risk_tables, .id = "imputation") %>%
   group_by(time, strata) %>%
   summarise(
-    n.risk = round(mean(n.risk, na.rm = TRUE)),
-    n.event = round(mean(n.event, na.rm = TRUE)),
-    .groups = "drop"
+    n.risk  = round(mean(n.risk,  na.rm = TRUE)),
+    n.event = round(mean(n.event, na.rm = TRUE)), .groups = "drop"
   ) %>%
   mutate(
-    Definition = sub("definition=", "", strata),
-    time_years = time / 12)
+    Definition_id = sub("definition=", "", strata),
+    time_years    = factor(time / 12)) %>%
+  filter(Definition_id %in% names(def_labels)) %>%
+  mutate(
+    RowOrder = fct_rev(factor(Definition_id, levels = names(def_labels))))
 
-risk_table_plot <- risk_df %>%
-  mutate(time_years = as.factor(time_years)) %>%
-  ggplot(aes(x = time_years, y = Definition)) +
-  geom_text(aes(label = paste0(n.risk, " / ", n.event)), size = 3.5) +
-  labs(x = "Years", y = NULL, title = "At Risk / Events") +
+
+# --- risk_table_plot ---
+risk_table_plot <- ggplot(risk_df, aes(x = time_years, y = RowOrder, color = Definition_id)) +
+  geom_text(aes(label = paste0(n.risk, " / ", n.event)), size = 3.5, show.legend = FALSE) +
+  scale_color_manual(values = def_cols, guide = "none") +
+  labs(x = "Years", y = NULL, title = "At Risk / Events (every 2 years)") +
   theme_minimal(base_size = 12) +
   theme(
-    axis.text.x = element_text(angle = 0, hjust = 0.5),
-    axis.text.y = element_text(hjust = 1),
-    panel.grid = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    axis.title.x = element_text(margin = margin(t = 5)),
-    axis.ticks = element_blank())
+    axis.text.y  = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid   = element_blank(),
+    plot.title   = element_text(hjust = 0.5),
+    axis.ticks   = element_blank()
+  )
+
 
 # Fit survival models
-
 km_models <- map(km_data_split, ~ survfit(Surv(time, status) ~ definition, data = .x))
 
 km_df_list <- map2(km_models, km_data_split, function(fit, data) {
@@ -993,19 +1142,9 @@ km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
     color = "Definition"
   ) +
   scale_color_manual(
-    values = c(
-      "D2T_step3" = "#984ea3",
-      "D2T_RA_sens1" = "#e41a1c",
-      "D2T_RA_sens2" = "#4daf4a",
-      "D2T_RA_sens3" = "#377eb8"
-    ),
-    labels = c(
-      "D2T_step3"   = "Base Definition (Rolling Average)",
-      "D2T_RA_sens1" = "Sens. 1: No 3rd MOA for DA",
-      "D2T_RA_sens2" = "Sens. 2: No Imputation",
-      "D2T_RA_sens3" = "Sens. 3: Diagnosed ≥ 2006",
-      "D2T_RA_sens4" = "Sens. 4: Failed 3 MOAs for Crit1 "
-    )
+    values = def_cols,
+    labels = def_labels,
+    breaks = names(def_labels)
   ) +
   guides(fill = "none") +
   theme_ggsurvfit_default() +
