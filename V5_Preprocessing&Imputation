@@ -1,3 +1,5 @@
+data_node<- read_csv("STRATA-FIT20250925.csv") # Upload your own data 
+
 data_node <- data_node %>%
   mutate(tsDMARD = case_when(
     is.na(tsDMARD) ~ NA_real_,
@@ -154,6 +156,10 @@ Table1 <- list(
     s <- sd(patient_summary$N_prev_tsDMARD, na.rm = TRUE)
     paste0(round(m,1), " (", round(s,1), ")")}
 )
+Table1 <- c(
+  "Total number of patients (n)" = n_distinct(data_node$pat_ID),
+  Table1
+)  # Adding total cohort number 
 
 # --- Append dynamic-name rows safely ---
 nm_yes <- sprintf("Followed from diagnosis (0-%d months), n (%%) - Yes", dx_window_months)
@@ -198,6 +204,41 @@ Table1[["Previous tsDMARDs, mean (SD) [Intake]"]] <- {
     sprintf("%.1f (%.1f)", m, s)
   }
 }
+#### 
+# --- Missingness of disease activity markers (per-visit) ---
+
+# Variables you want missingness for
+disease_markers <- c("DAS28", "SJC28", "TJC28", "ESR", "CRP", "Pat_global", "Ph_global")
+
+# Keep only visits with at least one disease activity marker present
+vis_with_marker <- data_node %>%
+  dplyr::filter(
+    dplyr::if_any(dplyr::all_of(disease_markers), ~ !is.na(.x))
+  )
+
+# Percent missing within those visits
+missingness <- vis_with_marker %>%
+  summarise(
+    DAS28       = mean(is.na(DAS28))       * 100,
+    `28SJC`     = mean(is.na(SJC28))       * 100,
+    `28TJC`     = mean(is.na(TJC28))       * 100,
+    ESR         = mean(is.na(ESR))         * 100,
+    CRP         = mean(is.na(CRP))         * 100,
+    `VAS patient`   = mean(is.na(Pat_global)) * 100,
+    `VAS physician` = mean(is.na(Ph_global))  * 100
+  )
+# --- Add Missingness* (%) block to Table 1 ---
+
+# Header row (just a label, optional)
+Table1[["Missingness* (%)"]] <- ""
+
+Table1[["  DAS28"]] <- sprintf("%.1f", missingness$DAS28)
+Table1[["  28SJC"]] <- sprintf("%.1f", missingness$`28SJC`)
+Table1[["  28TJC"]] <- sprintf("%.1f", missingness$`28TJC`)
+Table1[["  ESR"]]   <- sprintf("%.1f", missingness$ESR)
+Table1[["  CRP"]]   <- sprintf("%.1f", missingness$CRP)
+Table1[["  VAS patient"]]   <- sprintf("%.1f", missingness$`VAS patient`)
+Table1[["  VAS physician"]] <- sprintf("%.1f", missingness$`VAS physician`)
 
 # Convert to data frame
 summary_table1 <- data.frame(Variable = names(Table1), Value = unlist(Table1), row.names = NULL)
@@ -231,7 +272,7 @@ data_node <- data_node %>%
   ungroup()
 
 #define current calender year variable
-data_node$current_year <- round(data_node$Year_diagnosis + (data_node$month_diagnosis/12) +  (data_node$Visit_months_from_diagnosis)/12)
+data_node$current_year <- floor(data_node$Year_diagnosis + (data_node$month_diagnosis/12) +  (data_node$Visit_months_from_diagnosis)/12)
 
 data_node <- data_node %>%
   group_by(pat_ID) %>%
@@ -319,7 +360,7 @@ imputed_list <- lapply(1:10, function(i) {
            Pat_global_imp = "Pat_global",
            Ph_global_imp = "Ph_global" )
   df$DAS28_imp <- 0.56 * sqrt(df$TJC28_imp) + 0.28 * sqrt(df$SJC28_imp) +
-    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp                           # adjusted formula for DAS28 from CRP to ESR, to allign with the codebook 
+    0.70 * log(df$ESR_imp) + 0.014 * df$Pat_global_imp 
   df$CDAI <- df$TJC28_imp + df$SJC28_imp + (df$Pat_global_imp / 10) + (df$Ph_global_imp / 10)   # Calcualtion of the CDAI
   return(df)})
 
@@ -338,9 +379,10 @@ processed_list <- lapply(1:10, function(i) {
     group_by(pat_ID) %>%
     mutate(
       rol_av_DAS28 = rollmean(DAS28_imp, k = 2, fill = NA, align = "right"),
+      rol_av_DAS28_ni =rollmean(DAS28, k = 2, fill = NA, align = "right"),
       rol_av_Pat_global = rollmean(Pat_global_imp, k = 2, fill = NA, align = "right"),
       rol_av_Ph_global = rollmean(Ph_global_imp, k = 2, fill = NA, align = "right"),
-      rol_av_CRP = rollmean(CRP_imp, k = 2, fill = NA, align = "right")                    # Added rolling average CRP as new assessment of Criterium 2
+      rol_av_CRP = rollmean(CRP_imp, k = 2, fill = NA, align = "right")
     ) %>%
     ungroup()
   

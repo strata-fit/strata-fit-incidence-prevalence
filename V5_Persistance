@@ -1,8 +1,6 @@
 ################################################################
 # Persistance
 ################################################################
-# Step 1: Combine the 10 imputed + processed datasets
-pooled_data <- bind_rows(final_list, .id = "imputation_id")
 
 # ---- Step 0: Filter cohort (Year_diagnosis >= 2006) ----
 eligible_ids <- pooled_data %>%

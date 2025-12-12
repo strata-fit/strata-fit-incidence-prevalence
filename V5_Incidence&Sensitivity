@@ -294,16 +294,18 @@ Inc_plot
 ################################################################
 # Sensitvity analysis 
 ################################################################
-defs_all <- c("D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4", "D2T_RA_sens5")
+defs_all <- c("D2T_step2","D2T_step3", "D2T_RA_sens1", "D2T_RA_sens2", "D2T_RA_sens3", "D2T_RA_sens4", "D2T_RA_sens5", "D2T_RA_sens6")
 
 #centralize labels/colors and reuse across both plots & risk table
 def_labels <- c(
+  #D2T_step2 = "Base Definition",
   D2T_step3    = "Base Definition (Rolling Average)",
   # D2T_RA_sens1 = "No 3rd MOA for DA",   # uncomment if you include sens1
-  D2T_RA_sens2 = "1. No Imputation",
-  D2T_RA_sens3 = " 2. Diagnosed \u2265 2006",
+  #D2T_RA_sens2 = "1. No Imputation",
+  D2T_RA_sens3 = " 2. Diagnosed >2006",
   D2T_RA_sens4 = " 3. Failed 3 MOAs for Crit1",
-  D2T_RA_sens5 = "4. CDAI for DA"
+  D2T_RA_sens5 = "4. CDAI for DA",
+  D2T_RA_sens6 = "5. No Imputation - Rolling Average"
 )
 
 def_cols <- setNames(scales::hue_pal()(length(def_labels)), names(def_labels))
@@ -446,137 +448,94 @@ km_sens <- ggsurvfit(fit_km, linewidth = 1.2) +
 sens_plot <- km_sens / risk_table_plot + plot_layout(heights = c(3, 1))
 print(sens_plot)
 
+
 ################################################################
 # Stratified Cumulative Incidence Curves 
 ################################################################
-# Use one imputed dataset (e.g., first)
+# Select imputed dataset to use (e.g., first)
 data_node <- final_list[[1]]
 
-get_stratified_plot <- function(data_node,
-                                def = "D2T_step3",
-                                strat_var_expr,
-                                title = "Stratified Plot",
-                                strata_levels = NULL,
-                                x_years_max = 15,
-                                y_max = 0.30) {
-  
-  strat_quosure <- rlang::enquo(strat_var_expr)
-  
-  # Build incidence data & attach strata
+# Generate the `data_inc` for D2T_step3 only
+data_inc <- get_incidence_data("D2T_step3", data_node)
+
+get_stratified_plot <- function(data_node, def = "D2T_step3", strat_var_expr, title = "Stratified Plot") {
+  # Generate incidence data for the selected definition
   data_inc <- get_incidence_data(def, data_node) %>%
-    dplyr::filter(status %in% c(0, 1)) %>%
-    dplyr::mutate(strata = !!strat_quosure)
+    filter(status %in% c(0, 1)) %>%
+    mutate(strata = {{ strat_var_expr }})
   
-  # Optional: enforce nice order
-  if (!is.null(strata_levels)) {
-    data_inc <- data_inc %>% dplyr::mutate(strata = factor(strata, levels = strata_levels))
-  }
+  # Fit stratified Kaplan-Meier
+  fit <- survfit2(Surv(time, status) ~ strata, data = data_inc)
   
-  # Fit stratified KM (survfit2 returns a survfit-compatible object)
-  fit <- ggsurvfit::survfit2(Surv(time, status) ~ strata, data = data_inc)
-  
-  # Summarize using base survival::summary()
-  sf <- summary(fit)
-  
-  df <- tibble::tibble(
-    time   = sf$time,
-    surv   = sf$surv,
-    lower  = sf$lower,
-    upper  = sf$upper,
-    strata = sf$strata %||% "strata="  # handle NULL edge case
-  ) %>%
-    dplyr::mutate(
-      # Convert survival to cumulative incidence
+  # Extract summary and calculate cumulative incidence
+  df <- surv_summary(fit) %>%
+    mutate(
       cuminc = 1 - surv,
-      lower  = 1 - upper,
-      upper  = 1 - lower,
-      # strip "strata=" prefix if present
+      lower = 1 - upper,
+      upper = 1 - lower,
       strata = sub("^strata=", "", strata)
     )
   
-  # Keep intended order if provided
-  if (!is.null(strata_levels)) {
-    df <- df %>% dplyr::mutate(strata = factor(strata, levels = strata_levels))
-  }
-  
   # Plot
   ggplot(df, aes(x = time / 12, y = cuminc, color = strata)) +
-    geom_step(linewidth = 1.2, na.rm = TRUE) +
-    geom_ribbon(aes(ymin = lower, ymax = upper, fill = strata), alpha = 0.12, color = NA) +
+    geom_step(linewidth = 1.2) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = strata), alpha = 0.1, color = NA) +
     labs(
       title = title,
       x = "Years from Diagnosis",
       y = "Cumulative Incidence",
-      color = NULL, fill = NULL
+      color = NULL,
+      fill = NULL
     ) +
-    scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +
-    coord_cartesian(xlim = c(0, x_years_max)) +
-    scale_y_continuous(limits = c(0, y_max), expand = c(0, 0)) +
+    scale_x_continuous(breaks = seq(0, 20, by = 2), expand = c(0, 0)) +  # ← Added this line
+    coord_cartesian(xlim = c(0, 18)) + 
+    scale_y_continuous(limits = c(0, 0.3), expand = c(0, 0)) +
     theme_minimal(base_size = 13) +
     theme(legend.position = "bottom")
 }
 
-# -----------------------
-# Figure 3 – Year of Diagnosis
-# -----------------------
-fig3 <- get_stratified_plot(
+# Figure 3 - Diagnosis Year 
+i_diag_year <- get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
-  strat_var_expr = dplyr::case_when(
-    Year_diagnosis < 2006 ~ "<2006",
-    Year_diagnosis <= 2010 ~ "2006–2010",
-    Year_diagnosis <= 2015 ~ "2011–2015",
-    Year_diagnosis <= 2020 ~ "2016–2020",
-    Year_diagnosis > 2020  ~ ">2020",
+  strat_var_expr = case_when(
+    Year_diagnosis < 2006 ~ "<2006", Year_diagnosis <= 2010 ~ "2006–2010",
+    Year_diagnosis <= 2015 ~ "2011–2015", Year_diagnosis <= 2020 ~ "2016–2020",
+    Year_diagnosis > 2020 ~ ">2020",
     TRUE ~ "Missing"
   ),
-  strata_levels = c("<2006","2006–2010","2011–2015","2016–2020",">2020","Missing"),
-  title = "Cumulative Incidence by Year of Diagnosis",
-  x_years_max = 15,
-  y_max = 0.30
+  title = "Cumulative Incidence of D2T RA by Year of Diagnosis"
 )
-print(fig3)
 
-# -----------------------
-# Figure 4 – Age at Diagnosis
-# -----------------------
-fig4 <- get_stratified_plot(
+# Figure 4 - Age at Diagnosis
+i_age <-get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
-  strat_var_expr = dplyr::case_when(
-    Age_diagnosis < 40 ~ "<40",
-    Age_diagnosis < 50 ~ "40–50",
-    Age_diagnosis < 60 ~ "50–60",
-    Age_diagnosis < 70 ~ "60–70",
-    Age_diagnosis < 80 ~ "70–80",
-    Age_diagnosis >= 80 ~ "≥80",
+  strat_var_expr = case_when(
+    Age_diagnosis < 40 ~ "<40", Age_diagnosis < 50 ~ "40–50",
+    Age_diagnosis < 60 ~ "50–60", Age_diagnosis < 70 ~ "60–70",
+    Age_diagnosis < 80 ~ "70–80", Age_diagnosis >= 80 ~ ">80",
     TRUE ~ "Missing"
   ),
-  strata_levels = c("<40","40–50","50–60","60–70","70–80","≥80","Missing"),
-  title = "Cumulative Incidence by Age at Diagnosis",
-  x_years_max = 15,
-  y_max = 0.30
+  title = "Cumulative Incidence of D2T RA by Age at Diagnosis"
 )
-print(fig4)
 
-# -----------------------
-# Figure 5 – RF/anti-CCP status
-# -----------------------
-fig5 <- get_stratified_plot(
+# Figure 5 - RF-ACCP positivity 
+i_markers <-get_stratified_plot(
   data_node = data_node,
   def = "D2T_step3",
-  strat_var_expr = dplyr::case_when(
+  strat_var_expr = case_when(
     RF_positivity == 1 & anti_CCP == 1 ~ "Both+",
-    RF_positivity == 1 ~ "RF+ ",
-    anti_CCP == 1  ~ "CCP+ ",
-    (RF_positivity == 1 | anti_CCP == 1) ~ "Either+",
+    RF_positivity == 1 & is.na(anti_CCP) ~ "All RF+",
+    anti_CCP == 1 & is.na(RF_positivity) ~ "All CCP+",
+    (RF_positivity == 1 & anti_CCP == 0) |
+      (RF_positivity == 0 & anti_CCP == 1) ~ "Either+",
     RF_positivity == 0 & anti_CCP == 0 ~ "Seronegative",
-    TRUE ~ "Missing"
+    TRUE ~ "Missing info"
   ),
-  strata_levels = c("Both+","Either+","Seronegative","RF+ ","CCP+ ","Missing"),
-  title = "Cumulative Incidence by Serological Status",
-  x_years_max = 15,
-  y_max = 0.30
+  title = "Cumulative Incidence of D2T RA by Serological Status"
 )
-print(fig5)
 
+print(i_diag_year)
+print(i_age)
+print(i_markers)
