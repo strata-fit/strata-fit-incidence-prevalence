@@ -792,6 +792,21 @@ Inc_plot
 # Baseline Characteristics at different D2T Definitions 
 ################################################################
 defs <- paste0("D2T_step", 0:6)
+da_vars <- c("DAS28","TJC28", "SJC28", "ESR", "CRP", "Pat_global", "Ph_global")
+
+
+## ---- Helper: summarise mean/SD for a set of variables with a prefix ----
+summ_block <- function(df, vars, prefix) {
+  df %>%
+    summarise(
+      across(
+        all_of(vars),
+        list(
+          mean = ~ mean(.x, na.rm = TRUE),
+          sd   = ~ sd(.x,   na.rm = TRUE)),
+        .names = paste0(prefix, "_{.col}_{.fn}")),
+      .groups = "drop")
+}
 
 baseline_list <- lapply(final_list, function(data_node) {
   purrr::map_dfr(defs, function(def) {
@@ -833,20 +848,20 @@ baseline_list <- lapply(final_list, function(data_node) {
     total_n <- nrow(data_sub)
     
     # Diagnosis year categories
-    diag_lt2006_n      <- sum(data_sub$Year_diagnosis < 2006, na.rm = TRUE)
-    diag_2006_2010_n   <- sum(data_sub$Year_diagnosis >= 2006 & data_sub$Year_diagnosis < 2010, na.rm = TRUE)
-    diag_2010_2015_n   <- sum(data_sub$Year_diagnosis >= 2010 & data_sub$Year_diagnosis <= 2015, na.rm = TRUE)
-    diag_gt2015_n      <- sum(data_sub$Year_diagnosis > 2015, na.rm = TRUE)
+    diag_lt2006_n    <- sum(data_sub$Year_diagnosis < 2006, na.rm = TRUE)
+    diag_2006_2010_n <- sum(data_sub$Year_diagnosis >= 2006 & data_sub$Year_diagnosis < 2010, na.rm = TRUE)
+    diag_2010_2015_n <- sum(data_sub$Year_diagnosis >= 2010 & data_sub$Year_diagnosis <= 2015, na.rm = TRUE)
+    diag_gt2015_n    <- sum(data_sub$Year_diagnosis > 2015, na.rm = TRUE)
     
-    
-tibble(
+    tibble(
       Definition          = def,
       N                   = total_n,
       Female_pct          = mean(data_sub$Sex == 1,   na.rm = TRUE) * 100,
       RF_pos_pct          = mean(data_sub$RF  == 1,   na.rm = TRUE) * 100,
       aCCP_pos_pct        = mean(data_sub$aCCP == 1,  na.rm = TRUE) * 100,
       Age_mean            = mean(data_sub$Age_diag,   na.rm = TRUE),
-      Age_sd              = sd(  data_sub$Age_diag,   na.rm = TRUE), 
+      Age_sd              = sd(  data_sub$Age_diag,   na.rm = TRUE),
+      
       diag_lt2006_n       = diag_lt2006_n,
       diag_lt2006_pct     = 100 * diag_lt2006_n    / total_n,
       diag_2006_2010_n    = diag_2006_2010_n,
@@ -859,11 +874,10 @@ tibble(
   })
 })
 
-
 # ---- Combine into one dataframe ----
 baseline_all <- bind_rows(baseline_list, .id = "Imputation")
 
-# ---- Pooled summary by Rubin’s Rules (simple averaging) ----
+# ---- Pooled summary by simple averaging across imputations ----
 Table3 <- baseline_all %>%
   group_by(Definition) %>%
   summarise(
@@ -873,6 +887,7 @@ Table3 <- baseline_all %>%
     aCCP_pos_pct_mean    = mean(aCCP_pos_pct, na.rm = TRUE),
     Age_mean             = mean(Age_mean,     na.rm = TRUE),
     Age_sd_pooled        = sqrt(mean(Age_sd^2, na.rm = TRUE)),
+    
     diag_lt2006_n_mean      = mean(diag_lt2006_n,      na.rm = TRUE),
     diag_lt2006_pct_mean    = mean(diag_lt2006_pct,    na.rm = TRUE),
     diag_2006_2010_n_mean   = mean(diag_2006_2010_n,   na.rm = TRUE),
@@ -884,70 +899,146 @@ Table3 <- baseline_all %>%
     .groups = "drop"
   ) %>%
   mutate(
-    Diagnosis_lt2006      = sprintf("%.0f (%.1f%%)", diag_lt2006_n_mean,      diag_lt2006_pct_mean),
-    Diagnosis_2006_2010   = sprintf("%.0f (%.1f%%)", diag_2006_2010_n_mean,   diag_2006_2010_pct_mean),
-    Diagnosis_2010_2015   = sprintf("%.0f (%.1f%%)", diag_2010_2015_n_mean,   diag_2010_2015_pct_mean),
-    Diagnosis_gt2015      = sprintf("%.0f (%.1f%%)", diag_gt2015_n_mean,      diag_gt2015_pct_mean)
+    Diagnosis_lt2006    = sprintf("%.0f (%.1f%%)", diag_lt2006_n_mean,      diag_lt2006_pct_mean),
+    Diagnosis_2006_2010 = sprintf("%.0f (%.1f%%)", diag_2006_2010_n_mean,   diag_2006_2010_pct_mean),
+    Diagnosis_2010_2015 = sprintf("%.0f (%.1f%%)", diag_2010_2015_n_mean,   diag_2010_2015_pct_mean),
+    Diagnosis_gt2015    = sprintf("%.0f (%.1f%%)", diag_gt2015_n_mean,      diag_gt2015_pct_mean)
   )
 
 print(Table3)
 
-
 ################################################################
-# Average Disease AFTER D2T RA 
+# Table 3b: Disease activity BEFORE / AT / DURING DX YEAR / AFTER D2T RA
 ################################################################
-# Step 1: Combine the 10 imputed + processed datasets
 pooled_data <- bind_rows(final_list, .id = "imputation_id")
 
-# Definitions (D2T steps)
 defs <- paste0("D2T_step", 0:6)
 
-# Apply to pooled dataset
+# helper to format mean (sd)
+mean_sd <- function(x) {
+  if (all(is.na(x))) return(NA_character_)
+  sprintf("%.2f (%.2f)", mean(x, na.rm = TRUE), sd(x, na.rm = TRUE))
+}
+
 Table3b <- purrr::map_dfr(defs, function(def) {
   
-  # Step 1: Get first D2T event per patient for this definition
+  # First D2T time per patient for this definition
   D2T_times <- pooled_data %>%
-    filter(.data[[paste0(def, "_Ever")]] == 1) %>%
     group_by(pat_ID) %>%
     summarise(
-      definition = def,
-      D2T_time = min(Visit_months_from_diagnosis[.data[[def]] == 1], na.rm = TRUE),
+      D2T_time = if (any(.data[[def]] == 1, na.rm = TRUE)) {
+        min(Visit_months_from_diagnosis[.data[[def]] == 1], na.rm = TRUE)
+      } else {
+        NA_real_
+      },
       .groups = "drop"
-    )
+    ) %>%
+    filter(!is.na(D2T_time))
   
-  # Step 2: Join and keep post-D2T visits
-  Table3b <- pooled_data %>%
+  # No D2T patients for this definition → return NA row
+  if (nrow(D2T_times) == 0) {
+    return(tibble(
+      Definition           = def,
+      Hist_DAS28           = NA_character_,
+      First_DAS28          = NA_character_,
+      First_TJC28          = NA_character_,
+      First_SJC28          = NA_character_,
+      First_ESR            = NA_character_,
+      First_CRP            = NA_character_,
+      First_VAS_patient    = NA_character_,
+      First_VAS_physician  = NA_character_,
+      DxYear_DAS28         = NA_character_,
+      DxYear_TJC28         = NA_character_,
+      DxYear_SJC28         = NA_character_,
+      DxYear_ESR           = NA_character_,
+      DxYear_CRP           = NA_character_,
+      DxYear_VAS_patient   = NA_character_,
+      DxYear_VAS_physician = NA_character_,
+      Post_DAS28           = NA_character_,
+      Post_TJC28           = NA_character_,
+      Post_SJC28           = NA_character_,
+      Post_ESR             = NA_character_,
+      Post_CRP             = NA_character_
+    ))
+  }
+  
+  dat <- pooled_data %>%
+    inner_join(D2T_times, by = "pat_ID")
+  
+  ## 1) HISTORY BEFORE D2T (all visits < D2T_time) – DAS28 only
+  hist_dat <- dat %>%
+    filter(Visit_months_from_diagnosis < D2T_time)
+  
+  ## 2) AT FIRST D2T (visits == D2T_time)
+  first_dat <- dat %>%
+    filter(Visit_months_from_diagnosis == D2T_time)
+  
+  ## 3) DIAGNOSIS YEAR (0–12 months after diagnosis) among D2T patients
+  dx_dat <- pooled_data %>%
     semi_join(D2T_times, by = "pat_ID") %>%
-    mutate(definition = def) %>%
-    left_join(D2T_times, by = c("pat_ID", "definition")) %>%
-    filter(Visit_months_from_diagnosis >= D2T_time)
+    filter(Visit_months_from_diagnosis <= 12)
   
-  # Step 3: Summarise post-D2T disease activity
+  ## 4) AFTER D2T (all visits > D2T_time)
+  post_dat <- dat %>%
+    filter(Visit_months_from_diagnosis > D2T_time)
+  
   tibble(
-    Definition = def,
-    DAS28_mean = mean(Table3b$DAS28, na.rm = TRUE),
-    DAS28_sd = sd(Table3b$DAS28, na.rm = TRUE),
-    TJC28_mean = mean(Table3b$TJC28, na.rm = TRUE),
-    TJC28_sd = sd(Table3b$TJC28, na.rm = TRUE),
-    SJC28_mean = mean(Table3b$SJC28, na.rm = TRUE),
-    SJC28_sd = sd(Table3b$SJC28, na.rm = TRUE),
-    ESR_mean = mean(Table3b$ESR, na.rm = TRUE),
-    ESR_sd = sd(Table3b$ESR, na.rm = TRUE),
-    CRP_mean = mean(Table3b$CRP, na.rm = TRUE),
-    CRP_sd = sd(Table3b$CRP, na.rm = TRUE)
+    Definition           = def,
+    
+    # History in follow-up (before first D2T)
+    Hist_DAS28           = mean_sd(hist_dat$DAS28),
+    Hist_TJC28          = mean_sd(hist_dat$TJC28),
+    Hist_SJC28          = mean_sd(hist_dat$SJC28),
+    Hist_ESR            = mean_sd(hist_dat$ESR),
+    Hist_CRP            = mean_sd(hist_dat$CRP),
+    Hist_VAS_patient    = mean_sd(hist_dat$Pat_global),
+    Hist_VAS_physician  = mean_sd(hist_dat$Ph_global),
+    
+    # At first D2T
+    First_DAS28          = mean_sd(first_dat$DAS28),
+    First_TJC28          = mean_sd(first_dat$TJC28),
+    First_SJC28          = mean_sd(first_dat$SJC28),
+    First_ESR            = mean_sd(first_dat$ESR),
+    First_CRP            = mean_sd(first_dat$CRP),
+    First_VAS_patient    = mean_sd(first_dat$Pat_global),
+    First_VAS_physician  = mean_sd(first_dat$Ph_global),
+    
+    # During diagnosis year (0–12 months)
+    DxYear_DAS28         = mean_sd(dx_dat$DAS28),
+    DxYear_TJC28         = mean_sd(dx_dat$TJC28),
+    DxYear_SJC28         = mean_sd(dx_dat$SJC28),
+    DxYear_ESR           = mean_sd(dx_dat$ESR),
+    DxYear_CRP           = mean_sd(dx_dat$CRP),
+    DxYear_VAS_patient   = mean_sd(dx_dat$Pat_global),
+    DxYear_VAS_physician = mean_sd(dx_dat$Ph_global),
+    
+    # After first D2T
+    Post_DAS28           = mean_sd(post_dat$DAS28),
+    Post_TJC28           = mean_sd(post_dat$TJC28),
+    Post_SJC28           = mean_sd(post_dat$SJC28),
+    Post_ESR             = mean_sd(post_dat$ESR),
+    Post_CRP             = mean_sd(post_dat$CRP),
+    Post_VAS_patient   = mean_sd(post_dat$Pat_global),
+    Post_VAS_physician = mean_sd(post_dat$Ph_global)
   )
 })
 
-Table3b <- Table3b %>% mutate(
-  DAS28 =  paste0(round(DAS28_mean,2) , " (", round(DAS28_sd, 2), ") "),
-  TJC28 =  paste0(round(TJC28_mean,2) , " (", round(TJC28_sd, 2), ") "),
-  SJC28 =  paste0(round(SJC28_mean,2) , " (", round(SJC28_sd, 2), ") "),
-  ESR =  paste0(round(ESR_mean,2) , " (", round(ESR_sd, 2), ") "),
-  CRP =  paste0(round(CRP_mean,2) , " (", round(CRP_sd, 2), ") ")) %>%
-  select(Definition, DAS28, TJC28, SJC28, ESR, CRP)
-
 print(Table3b)
 
+# Transpose Table3b so definitions become columns
+Table3b_wide <- Table3b %>%
+  tidyr::pivot_longer(
+    cols = -Definition,
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = Definition,
+    values_from = Value
+  ) %>%
+  dplyr::arrange(Measure)
+
+print(Table3b_wide)
 
 
 ################################################################
